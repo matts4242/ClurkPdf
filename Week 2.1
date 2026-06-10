@@ -1,0 +1,598 @@
+## WEEK 2 PROMPT: Database Schema + Canvas Region Drawing
+
+**Project Context:**
+Building on Week 1's upload and viewer. Now users can draw rectangular regions on the PDF and save them to a database. This enables the core extraction workflow—defining what text areas to OCR later.
+
+**Tech Stack Additions:**
+- Database: PostgreSQL 14+
+- ORM: Prisma (preferred) or node-pg with typed queries
+- Canvas: HTML5 Canvas API (no external libraries yet—keep it lightweight)
+
+**Updated Project Structure:**
+```
+invoice-processor/
+├── client/
+│   ├── src/
+│   │   ├── components/
+│   │   │   ├── DocumentViewer.tsx          # UPDATE: Add canvas overlay
+│   │   │   ├── FileDropzone.tsx
+│   │   │   ├── UploadProgress.tsx
+│   │   │   ├── RegionCanvas.tsx            # NEW: Drawing layer
+│   │   │   ├── RegionList.tsx              # NEW: Sidebar list of regions
+│   │   │   └── FieldTypeSelector.tsx       # NEW: Dropdown for region types
+│   │   ├── hooks/
+│   │   │   ├── useDocumentUpload.ts
+│   │   │   ├── useRegions.ts               # NEW: CRUD operations
+│   │   │   └── useCanvasDrawing.ts         # NEW: Drawing logic
+│   │   ├── types/
+│   │   │   └── index.ts                    # UPDATE: Add region types
+│   │   └── utils/
+│   │       └── canvas.ts                   # NEW: Coordinate helpers
+├── server/
+│   ├── src/
+│   │   ├── routes/
+│   │   │   └── documents.ts                # UPDATE: Add region routes
+│   │   ├── controllers/
+│   │   │   ├── documentController.ts
+│   │   │   └── regionController.ts         # NEW
+│   │   ├── services/
+│   │   │   ├── pdfService.ts
+│   │   │   └── regionService.ts            # NEW
+│   │   ├── prisma/
+│   │   │   ├── schema.prisma               # NEW
+│   │   │   └── client.ts                   # NEW
+│   │   └── types/
+│   │       └── index.ts                    # UPDATE: Add region types
+│   └── docker-compose.yml                  # NEW: For local PostgreSQL
+└── database/                               # NEW
+    └── migrations/
+```
+
+---
+
+### INTERFACE CONTRACTS
+
+**Region Type Definition:**
+```typescript
+// Normalized coordinates (0-1) for resolution independence
+interface Region {
+  id: string;                    // UUID v4
+  documentId: string;
+  pageNumber: number;            // 1-indexed
+  x: number;                     // 0.0 to 1.0 (left)
+  y: number;                     // 0.0 to 1.0 (top)
+  width: number;                 // 0.0 to 1.0
+  height: number;                // 0.0 to 1.0
+  fieldType: FieldType;
+  fieldLabel?: string;           // Custom label if fieldType is 'custom'
+  createdAt: string;
+  updatedAt: string;
+}
+
+enum FieldType {
+  VENDOR_NAME = 'vendor_name',
+  VENDOR_ADDRESS = 'vendor_address',
+  INVOICE_NUMBER = 'invoice_number',
+  INVOICE_DATE = 'invoice_date',
+  DUE_DATE = 'due_date',
+  PO_NUMBER = 'po_number',
+  SUBTOTAL = 'subtotal',
+  TAX = 'tax',
+  TOTAL = 'total',
+  LINE_ITEMS = 'line_items',    // Special: indicates multi-line table region
+  CUSTOM = 'custom'
+}
+```
+
+**Canvas Coordinate System:**
+```typescript
+// Internal canvas uses pixel coordinates
+interface CanvasRegion {
+  id: string;
+  x: number;                     // pixels from left
+  y: number;                     // pixels from top
+  width: number;                 // pixels
+  height: number;                // pixels
+  fieldType: FieldType;
+  isSelected: boolean;
+  isDrawing: boolean;            // Currently being drawn
+}
+
+// Conversion helpers needed:
+// - screenToNormalized(canvasX, canvasY, canvasWidth, canvasHeight) → {x, y}
+// - normalizedToScreen(normX, normY, canvasWidth, canvasHeight) → {x, y}
+// - regionToCanvas(region, canvasWidth, canvasHeight) → CanvasRegion
+// - canvasToRegion(canvasRegion, canvasWidth, canvasHeight) → Region
+```
+
+**API Endpoints (add to existing routes):**
+```typescript
+GET    /api/documents/:id/regions                    // List all regions for document
+POST   /api/documents/:id/regions                    // Create new region
+PUT    /api/documents/:id/regions/:regionId          // Update region (move/resize/type)
+DELETE /api/documents/:id/regions/:regionId          // Delete region
+GET    /api/documents/:id/regions/page/:pageNumber   // Get regions for specific page
+```
+
+**API Response Types:**
+```typescript
+// All responses wrapped in ApiResponse<T> from Week 1
+
+// POST /api/documents/:id/regions
+interface CreateRegionRequest {
+  pageNumber: number;
+  x: number;                     // normalized 0-1
+  y: number;
+  width: number;
+  height: number;
+  fieldType: FieldType;
+  fieldLabel?: string;
+}
+
+interface CreateRegionResponse {
+  region: Region;
+}
+
+// GET /api/documents/:id/regions
+interface ListRegionsResponse {
+  regions: Region[];
+  total: number;
+}
+
+// PUT /api/documents/:id/regions/:regionId
+interface UpdateRegionRequest {
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+  fieldType?: FieldType;
+  fieldLabel?: string;
+}
+```
+
+**Component Props:**
+
+```typescript
+// RegionCanvas.tsx
+interface RegionCanvasProps {
+  documentId: string;
+  pageNumber: number;
+  imageWidth: number;            // Original PDF page width in px
+  imageHeight: number;           // Original PDF page height in px
+  regions: Region[];
+  mode: 'draw' | 'select' | 'pan';  // Current interaction mode
+  selectedRegionId: string | null;
+  onRegionCreate: (region: Region) => void;
+  onRegionUpdate: (regionId: string, updates: Partial<Region>) => void;
+  onRegionDelete: (regionId: string) => void;
+  onRegionSelect: (regionId: string | null) => void;
+  scale: number;                 // Current zoom level (0.5 to 4.0)
+}
+
+// RegionList.tsx
+interface RegionListProps {
+  regions: Region[];
+  selectedRegionId: string | null;
+  onRegionSelect: (regionId: string) => void;
+  onRegionDelete: (regionId: string) => void;
+  onRegionUpdate: (regionId: string, updates: Partial<Region>) => void;
+}
+
+// FieldTypeSelector.tsx
+interface FieldTypeSelectorProps {
+  value: FieldType;
+  onChange: (fieldType: FieldType, label?: string) => void;
+  allowCustom?: boolean;
+}
+```
+
+---
+
+### DATABASE IMPLEMENTATION (Prisma)
+
+**1. Schema (`server/prisma/schema.prisma`)**
+
+```prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Document {
+  id            String   @id @default(uuid())
+  filename      String
+  originalName  String
+  mimeType      String
+  size          Int
+  pageCount     Int
+  uploadPath    String
+  status        String   // uploaded, processing, ready, error
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  regions       Region[]
+  
+  @@index([status])
+  @@index([createdAt])
+}
+
+model Region {
+  id            String    @id @default(uuid())
+  documentId    String
+  pageNumber    Int
+  x             Float     // 0.0 to 1.0
+  y             Float     // 0.0 to 1.0
+  width         Float     // 0.0 to 1.0
+  height        Float     // 0.0 to 1.0
+  fieldType     FieldType
+  fieldLabel    String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  document      Document  @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  
+  @@index([documentId])
+  @@index([pageNumber])
+  @@index([fieldType])
+}
+
+enum FieldType {
+  VENDOR_NAME
+  VENDOR_ADDRESS
+  INVOICE_NUMBER
+  INVOICE_DATE
+  DUE_DATE
+  PO_NUMBER
+  SUBTOTAL
+  TAX
+  TOTAL
+  LINE_ITEMS
+  CUSTOM
+}
+```
+
+**2. Environment Configuration**
+
+Create `.env` in server/:
+```
+DATABASE_URL="postgresql://user:password@localhost:5432/invoice_processor?schema=public"
+```
+
+**3. Migration Setup**
+
+Create `docker-compose.yml` for local PostgreSQL:
+```yaml
+version: '3.8'
+services:
+  postgres:
+    image: postgres:14-alpine
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: invoice_processor
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+volumes:
+  postgres_data:
+```
+
+**4. Prisma Client Setup (`server/src/prisma/client.ts`)**
+
+- Export singleton PrismaClient instance
+- Add connection pooling config
+- Handle disconnect on server shutdown
+
+---
+
+### BACKEND IMPLEMENTATION
+
+**1. Region Service (`server/src/services/regionService.ts`)**
+
+Implement CRUD operations:
+
+```typescript
+// Validation: Ensure coordinates are within 0-1 bounds
+// Validation: Ensure width/height are positive
+// Validation: Ensure pageNumber is within document's pageCount
+
+async function createRegion(
+  documentId: string, 
+  data: CreateRegionRequest
+): Promise<Region>
+
+async function getRegionsByDocument(
+  documentId: string,
+  pageNumber?: number
+): Promise<Region[]>
+
+async function updateRegion(
+  regionId: string,
+  documentId: string,  // For ownership verification
+  updates: UpdateRegionRequest
+): Promise<Region>
+
+async function deleteRegion(
+  regionId: string,
+  documentId: string
+): Promise<void>
+
+// Additional: Get regions by field type for template learning later
+async function getRegionsByFieldType(
+  documentId: string,
+  fieldType: FieldType
+): Promise<Region[]>
+```
+
+**Error Cases:**
+- `REGION_OUT_OF_BOUNDS`: Coordinates exceed 0-1 range (400)
+- `INVALID_PAGE`: Page number > document page count (400)
+- `REGION_NOT_FOUND`: Region ID doesn't exist (404)
+- `INVALID_DIMENSIONS`: Width or height <= 0 (400)
+
+**2. Region Controller (`server/src/controllers/regionController.ts`)**
+
+Implement handlers for all routes. Key behaviors:
+- Validate document exists and belongs to user (ownership check stub for now)
+- Normalize coordinates (ensure 4 decimal places precision)
+- Return full Region object on create/update
+- Cascade delete handled by Prisma relation
+
+**3. Route Updates (`server/src/routes/documents.ts`)**
+
+Add region routes under `/api/documents/:id/regions`
+
+**4. Document Controller Updates**
+
+Update `getDocument` to include:
+```typescript
+// Include region count in response
+interface DocumentWithStats extends Document {
+  regionCount: number;
+  pagesWithRegions: number[];  // Which pages have regions drawn
+}
+```
+
+---
+
+### FRONTEND IMPLEMENTATION
+
+**1. Custom Hooks**
+
+**`useCanvasDrawing.ts`:**
+```typescript
+interface UseCanvasDrawingReturn {
+  isDrawing: boolean;
+  currentRegion: CanvasRegion | null;
+  startDrawing: (x: number, y: number) => void;
+  updateDrawing: (x: number, y: number) => void;
+  endDrawing: () => CanvasRegion | null;
+  cancelDrawing: () => void;
+}
+
+// Handles mouse/touch events for creating new regions
+// Returns normalized coordinates
+// Supports Shift key for square regions (width === height)
+```
+
+**`useRegions.ts`:**
+```typescript
+interface UseRegionsReturn {
+  regions: Region[];
+  loading: boolean;
+  error: string | null;
+  createRegion: (region: Omit<Region, 'id' | 'createdAt' | 'updatedAt'>) => Promise<void>;
+  updateRegion: (id: string, updates: Partial<Region>) => Promise<void>;
+  deleteRegion: (id: string) => Promise<void>;
+  refreshRegions: () => Promise<void>;
+}
+
+// Fetches regions on mount
+// Optimistic updates for better UX
+// Auto-retry on network failure (3 attempts)
+```
+
+**2. RegionCanvas Component**
+
+**Core Features:**
+- Layered canvas architecture:
+  - Layer 0: PDF image (from Week 1)
+  - Layer 1: Existing regions (semi-transparent colored boxes)
+  - Layer 2: Interaction layer (mouse events, current drawing)
+
+**Drawing Behavior:**
+```
+Mode: 'draw'
+  - Cursor: crosshair
+  - Click+drag: creates new region
+  - Release: opens FieldTypeSelector modal
+  - Escape: cancels current draw
+
+Mode: 'select'
+  - Cursor: pointer (default)
+  - Click region: selects it (shows resize handles)
+  - Click empty space: deselects
+  - Delete key: removes selected region
+  
+Mode: 'pan'
+  - Cursor: grab/grabbing
+  - Click+drag: pans zoomed image
+```
+
+**Visual Design:**
+- Unselected regions: 2px border, 20% fill opacity
+- Selected region: 3px border (dashed), 30% fill opacity, 8px resize handles at corners
+- Currently drawing: 2px dashed border, 10% fill, dimensions tooltip following cursor
+- Color coding by field type:
+  - Vendor info: Blue (#3B82F6)
+  - Invoice metadata: Green (#10B981)
+  - Financial: Purple (#8B5CF6)
+  - Line items: Orange (#F59E0B)
+  - Custom: Gray (#6B7280)
+
+**Resize Handles:**
+- 8px squares at 4 corners
+- Drag handle to resize (maintain aspect ratio optional with Shift)
+- Minimum region size: 20x20 pixels on screen
+
+**3. RegionList Component**
+
+Sidebar panel showing:
+- List of all regions for current page
+- Sort by: field type, creation time, vertical position (top-to-bottom)
+- Search/filter by field type
+- Click to select and scroll to region in canvas
+- Inline edit for field type and custom label
+- Delete button with confirmation
+
+**4. FieldTypeSelector Component**
+
+Dropdown/select with:
+- Grouped options:
+  - Vendor Information (name, address)
+  - Invoice Details (number, date, due date, PO)
+  - Financial (subtotal, tax, total)
+  - Other (line items, custom)
+- Custom option reveals text input for label
+- Keyboard shortcuts: 1-9 for quick selection of common types
+- Recently used types at top of list
+
+**5. Updated DocumentViewer**
+
+Integrate RegionCanvas:
+- Toolbar with mode toggle buttons (Draw / Select / Pan)
+- Zoom controls (affect both image and canvas)
+- Page navigation (previous/next, page number input)
+- Region counter in header ("12 regions on this page")
+- Keyboard shortcuts:
+  - D: Draw mode
+  - S: Select mode
+  - Space: Pan mode (hold)
+  - Delete/Backspace: Delete selected region
+  - Ctrl+Z: Undo last region creation (local state only)
+  - Arrow keys: Nudge selected region 1px
+
+**6. Coordinate Utilities (`client/src/utils/canvas.ts`)**
+
+```typescript
+// Convert between coordinate systems
+function screenToNormalized(
+  screenX: number,
+  screenY: number,
+  canvasWidth: number,
+  canvasHeight: number
+): { x: number; y: number }
+
+function normalizedToScreen(
+  normX: number,
+  normY: number,
+  canvasWidth: number,
+  canvasHeight: number
+): { x: number; y: number }
+
+// Ensure coordinates stay within 0-1 bounds
+function clampNormalized(value: number): number
+
+// Calculate region from two corners (handles negative width/height from dragging)
+function normalizeRegionBounds(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number
+): { x: number; y: number; width: number; height: number }
+```
+
+---
+
+### ERROR HANDLING SPECIFICATIONS
+
+**Backend Errors:**
+1. **Coordinate validation fails**
+   - Code: `INVALID_COORDINATES`
+   - Message: "Region coordinates must be between 0 and 1"
+   - Status: 400
+
+2. **Page number invalid**
+   - Code: `INVALID_PAGE`
+   - Message: "Page {n} does not exist in document (max: {pageCount})"
+   - Status: 400
+
+3. **Region too small**
+   - Code: `REGION_TOO_SMALL`
+   - Message: "Region must be at least 0.01 x 0.01 (1% of page)"
+   - Status: 400
+
+4. **Concurrent modification**
+   - Code: `REGION_MODIFIED`
+   - Message: "Region was modified by another user" (for future multi-user)
+   - Status: 409
+
+**Frontend Error Handling:**
+- Show toast notification on failed save
+- Keep unsaved changes in local state for retry
+- Visual indicator for regions pending save (dashed border, spinner)
+- Confirm dialog before deleting region
+- Prevent drawing regions outside visible canvas bounds
+
+---
+
+### ACCEPTANCE CRITERIA
+
+Verify these before Week 3:
+
+1. [ ] Can start PostgreSQL with `docker-compose up`
+2. [ ] Prisma migrations run successfully
+3. [ ] Upload a PDF, database entry created in `Document` table
+4. [ ] Switch to "Draw Mode", click and drag creates visible rectangle
+5. [ ] On mouse release, FieldTypeSelector appears
+6. [ ] Selecting field type saves region to database
+7. [ ] Region appears in sidebar list with correct type label
+8. [ ] Can select a region—shows resize handles
+9. [ ] Can drag handles to resize—updates in database
+10. [ ] Can drag entire region to move—updates position
+11. [ ] Can delete region—removes from database and UI
+12. [ ] Zoom to 200%, draw region—coordinates correctly normalized
+13. [ ] Refresh page—regions reload in correct positions
+14. [ ] Can draw multiple regions on different pages
+15. [ ] Page navigation preserves regions per page
+16. [ ] Keyboard shortcuts work (D, S, Delete, arrows)
+17. [ ] Invalid coordinates (negative, >1) rejected by API
+18. [ ] Concurrent region creation handled gracefully
+
+---
+
+### DATABASE QUERIES TO TEST
+
+Include these in a `server/scripts/test-queries.ts`:
+
+```typescript
+// After creating regions, verify with:
+// 1. Get all regions for document, ordered by page then vertical position
+// 2. Get count of regions per field type
+// 3. Get documents with no regions (for "pending processing" view)
+```
+
+---
+
+### MIGRATION GUIDE FROM WEEK 1
+
+Add to README:
+
+**Week 1 → Week 2 Migration:**
+1. Run `docker-compose up -d` to start PostgreSQL
+2. Run `npx prisma migrate dev` in server/
+3. Update `.env` with DATABASE_URL
+4. Existing uploads remain compatible—database stores new metadata
+
+---
+
+Generate the complete working code for Week 2, ensuring all coordinate conversions are mathematically correct and regions persist accurately across zoom levels and page sizes.
+
+---
+
+Ready for **Week 3** (OCR Integration), or need adjustments to this prompt?
