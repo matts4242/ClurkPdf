@@ -1,0 +1,424 @@
+## Web Application Specification: Intelligent Invoice Batch Processor
+
+### Core Concept
+Build a browser-based SaaS application that enables accounting teams, freelancers, and small business owners to efficiently digitize paper and PDF invoices through an intuitive dual-mode extraction interface. The app combines manual region-based OCR with intelligent document attribute highlighting to create a hybrid human-in-the-loop data extraction pipeline.
+
+### User Personas
+- **Primary**: Bookkeepers processing 50-200 invoices weekly
+- **Secondary**: Small business owners doing their own accounting
+- **Tertiary**: AP (Accounts Payable) clerks in mid-size companies
+
+### Feature Requirements
+
+#### 1. Document Ingestion Pipeline
+- **Batch PDF Upload**: Drag-and-drop or file picker accepting up to 50 PDFs simultaneously (max 25MB per file, 100MB total batch)
+- **Multi-format Support**: PDF (primary), image files (JPEG, PNG, TIFF) as secondary inputs
+- **Page Preview Generation**: Thumbnail generation for each page (150x200px) with lazy loading
+- **Document Classification**: Auto-detect invoice vs. receipt vs. other document types
+- **Duplicate Detection**: Hash-based duplicate detection with visual warning
+
+#### 2. Dual-Mode Extraction Interface
+
+**Mode A: Region-Based OCR (Canvas Interaction)**
+- **Interactive Document Viewer**: PDF.js-based renderer with zoom (50%-400%), pan, and rotate capabilities
+- **Bounding Box Drawing**: Click-and-drag to create resizable rectangular regions over text areas
+- **Multi-Region Selection**: Allow multiple non-contiguous boxes per document
+- **Region Types**: Assign semantic meaning to each box (Vendor Name, Invoice Number, Date, Line Items, Total Amount, Tax, etc.)
+- **OCR Engine Integration**: Tesseract.js for client-side processing or cloud OCR API (Google Vision/AWS Textract) for server-side
+- **Confidence Scoring**: Display OCR confidence per region (color-coded: green >90%, yellow 70-90%, red <70%)
+- **Text Correction Panel**: Side-by-side view of extracted text with inline editing
+
+**Mode B: Document Attribute Highlighting (Text Layer Interaction)**
+- **Text Layer Rendering**: Extract and render selectable text overlay on PDF canvas
+- **Semantic Highlighting**: Users highlight text spans to tag with predefined attributes:
+  - Vendor Information (Name, Address, Tax ID)
+  - Invoice Metadata (Number, Date, Due Date, PO Number)
+  - Financial Data (Subtotal, Tax, Total, Currency)
+  - Line Items (Description, Quantity, Unit Price, Amount)
+- **Smart Snapping**: Auto-expand selection to word/line boundaries on double-click
+- **Keyboard Shortcuts**: Quick-tagging via number keys (1=Invoice#, 2=Date, etc.)
+- **Template Learning**: Suggest attribute locations based on previously processed invoices from same vendor
+
+#### 3. Batch Processing Workflow
+- **Queue Management**: Visual pipeline showing documents in stages (Uploaded → Processing → Review → Exported)
+- **Bulk Actions**: Apply OCR regions or attribute mappings across similar documents in batch
+- **Template System**: Save extraction patterns as templates for recurring vendors
+- **Progress Persistence**: Auto-save progress every 30 seconds; resume interrupted sessions
+
+#### 4. Data Validation & Output
+- **Field Validation**: Regex patterns for common formats (dates, currency amounts, email addresses)
+- **Cross-Field Logic**: Validate that Line Item sum equals Subtotal, Subtotal + Tax equals Total
+- **Export Formats**: 
+  - Structured JSON (per document and aggregated)
+  - CSV/Excel spreadsheet
+  - QuickBooks/Xero integration (OAuth API)
+  - XML for ERP systems
+- **Audit Trail**: Timestamped log of all extractions and corrections made
+
+### Technical Architecture
+
+**Frontend Stack:**
+- React 18+ with TypeScript
+- PDF.js for rendering and text extraction
+- Fabric.js or Konva.js for canvas-based region drawing
+- React-PDF or similar for thumbnail generation
+- State management: Zustand or Redux Toolkit
+
+**Backend Stack:**
+- Node.js/Express or Python/FastAPI
+- PostgreSQL for document metadata and extraction results
+- Redis for job queues and caching
+- S3/MinIO for document storage
+- WebSocket server for real-time progress updates
+
+**OCR Integration:**
+- Primary: Google Cloud Vision API or AWS Textract (for accuracy)
+- Fallback: Tesseract.js (for offline capability and cost reduction)
+- Custom model endpoint for specialized invoice formats (optional)
+
+**Infrastructure:**
+- Docker containerization
+- Horizontal scaling for batch processing workers
+- CDN for static assets and thumbnails
+
+### UI/UX Design Specifications
+
+**Main Interface Layout:**
+```
+┌─────────────────────────────────────────────────────────┐
+│  HEADER: Logo | Batch Progress | User Menu | Export      │
+├──────────┬──────────────────────────────────────────────┤
+│          │                                              │
+│  THUMB-  │         DOCUMENT VIEWER                      │
+│  NAIL    │         (PDF Canvas + Text Layer)            │
+│  PANEL   │                                              │
+│          │         [Toolbar: Zoom | Pan | Draw | Text]  │
+│          │                                              │
+│          ├──────────────────────────────────────────────┤
+│          │         EXTRACTION PANEL                     │
+│          │         [Tabs: Regions | Attributes | Data]  │
+│          │                                              │
+└──────────┴──────────────────────────────────────────────┘
+```
+
+**Interaction Flow:**
+1. User uploads batch → sees thumbnail grid
+2. Clicks first document → opens in viewer
+3. Selects extraction mode (Region OCR or Attribute Highlight)
+4. Performs extraction → sees extracted data in side panel
+5. Reviews/edits extracted fields
+6. Marks document as complete → moves to next in batch
+7. Bulk exports when batch complete
+
+**Key Interactions:**
+- **Region Drawing**: Click start → drag → release → select field type from dropdown → OCR runs automatically
+- **Text Highlighting**: Triple-click to select line → assign attribute from floating toolbar → value appears in data panel
+- **Template Application**: "Apply to Similar Documents" button suggests matches based on vendor name detection
+
+### Data Model (Core Entities)
+
+**Document**
+- id, filename, file_path, page_count, upload_timestamp, status, user_id
+
+**ExtractionRegion**
+- id, document_id, page_number, x, y, width, height, field_type, raw_text, confidence_score, corrected_text
+
+**DocumentAttribute**
+- id, document_id, field_name, value, confidence, source (auto|manual), position_data
+
+**ExtractionTemplate**
+- id, user_id, template_name, vendor_pattern, region_mappings, attribute_rules
+
+### Security & Compliance
+- End-to-end encryption for documents at rest (AES-256)
+- TLS 1.3 for data in transit
+- SOC 2 Type II compliance roadmap
+- GDPR-compliant data retention (auto-delete after configurable period)
+- Role-based access control (Admin, Booker, Viewer)
+
+### Pricing Model (Optional)
+- Freemium: 50 pages/month free
+- Pro: $29/month for 1000 pages
+- Business: $99/month for 5000 pages + API access
+- Enterprise: Custom volume pricing
+
+### Success Metrics
+- Average time to process 50 invoices: <15 minutes (target: <5 minutes with templates)
+- OCR accuracy: >95% for printed text, >85% for handwritten
+- User retention: 70% return within 7 days
+
+---
+
+This prompt provides a complete blueprint for development, suitable for presenting to engineers, designers, or stakeholders. Would you like me to expand on any specific section, such as the OCR integration strategy or the template learning algorithm?
+
+---
+
+What would be the best way to start prompting this build? How would you break up each section for a model to begin coding
+
+---
+
+Here's a practical phased approach with specific prompt templates you can use:
+
+## Phase Strategy: Vertical Slice → Horizontal Expansion
+
+**Don't build layer by layer** (frontend → backend → integration). Instead, build **vertical slices**—complete working features end-to-end. This gives you working software faster and validates your architecture.
+
+---
+
+## Phase 1: Document Upload + Viewer (Week 1)
+
+**Goal**: Upload a PDF and see it rendered in the browser.
+
+**Prompt 1 - Backend:**
+```
+Create a Node.js/Express API with these endpoints:
+- POST /api/documents/upload - Accept multipart/form-data PDF uploads, save to local ./uploads directory, return document ID
+- GET /api/documents/:id - Return document metadata (filename, page count, upload date)
+- GET /api/documents/:id/pages/:pageNumber - Return specific page as image (use pdf2pic or pdf-poppler to convert PDF pages to PNG)
+
+Use Express, Multer for uploads, and create the uploads/ directory if it doesn't exist. Include basic error handling for file size limits (10MB max). Return JSON responses with consistent structure { success: boolean, data: any, error?: string }
+```
+
+**Prompt 2 - Frontend:**
+```
+Create a React component called DocumentViewer with:
+- File dropzone using react-dropzone for PDF upload
+- On upload, POST to /api/documents/upload
+- Display upload progress
+- After upload, fetch and display the first page as an image from GET /api/documents/:id/pages/1
+- Basic zoom in/out buttons that scale the image
+
+Use functional components with hooks, axios for API calls, and Tailwind for styling. The component should accept an onDocumentLoaded callback prop.
+```
+
+---
+
+## Phase 2: Canvas Region Drawing (Week 2)
+
+**Goal**: Draw boxes on the PDF and capture coordinates.
+
+**Prompt 3 - Frontend Canvas:**
+```
+Extend the DocumentViewer component to add interactive region drawing:
+
+1. Add a canvas overlay positioned absolutely over the PDF image
+2. Implement click-and-drag to draw rectangles:
+   - onMouseDown: start drawing, record start coordinates
+   - onMouseMove: update rectangle dimensions
+   - onMouseUp: finish drawing, emit region data
+3. Display drawn regions as semi-transparent colored boxes with resize handles
+4. Allow clicking a region to delete it
+5. Export function getRegions() that returns array of { x, y, width, height, pageNumber }
+
+Use HTML5 Canvas API. Coordinates must be normalized (0-1 relative to image dimensions) so they work regardless of zoom level. Add a "Draw Mode" toggle button.
+```
+
+**Prompt 4 - Database:**
+```
+Create a PostgreSQL schema with these tables:
+
+documents:
+  - id (UUID primary key)
+  - filename (string)
+  - original_path (string)
+  - page_count (integer)
+  - created_at (timestamp)
+
+extraction_regions:
+  - id (UUID primary key)
+  - document_id (UUID foreign key)
+  - page_number (integer)
+  - x, y, width, height (floats, normalized 0-1)
+  - field_type (enum: 'vendor_name', 'invoice_number', 'date', 'total', 'line_items', 'custom')
+  - created_at (timestamp)
+
+Write a migration script using node-pg-migrate or raw SQL. Include indexes on document_id and field_type.
+```
+
+---
+
+## Phase 3: OCR Integration (Week 3)
+
+**Goal**: Send drawn regions to OCR and get text back.
+
+**Prompt 5 - OCR Worker:**
+```
+Create an OCR processing module using Tesseract.js:
+
+Function processRegion(documentId, pageNumber, region):
+  1. Load the page image from ./uploads/:documentId/pages/:pageNumber.png
+  2. Crop the image to the region coordinates (x, y, width, height)
+  3. Run Tesseract OCR on the cropped image
+  4. Return { text: string, confidence: number }
+
+Create a POST /api/documents/:id/ocr endpoint that:
+  - Accepts { regions: Array<{pageNumber, x, y, width, height}> }
+  - Processes each region in parallel (Promise.all)
+  - Saves results to extraction_regions table
+  - Returns { results: Array<{regionId, text, confidence}> }
+
+Handle errors gracefully—if OCR fails on one region, return error for that region but continue processing others.
+```
+
+---
+
+## Phase 4: Text Layer / Attribute Mode (Week 4)
+
+**Goal**: Select actual text from PDF instead of drawing boxes.
+
+**Prompt 6 - PDF Text Extraction:**
+```
+Add text extraction capability:
+
+1. Install pdf-parse or use pdf.js server-side to extract text with positioning
+2. Create GET /api/documents/:id/text-layer/:pageNumber endpoint that returns:
+   {
+     textItems: [
+       { text: string, x: float, y: float, width: float, height: float, fontSize: float }
+     ]
+   }
+   Coordinates should be normalized (0-1)
+
+3. Create React component TextLayer that:
+   - Renders invisible absolutely-positioned divs over the PDF image
+   - Each div corresponds to a textItem from the API
+   - Supports text selection (native browser selection)
+   - onMouseUp, if text is selected, show floating toolbar with field type buttons
+   - Returns selected text + coordinates when field type is clicked
+```
+
+---
+
+## Phase 5: Batch Processing & Templates (Week 5-6)
+
+**Prompt 7 - Batch Queue:**
+```
+Implement batch processing with Bull Queue and Redis:
+
+1. Create a document processing queue
+2. When user uploads multiple files, add each to queue with job type 'extract-invoice'
+3. Create a processor that:
+   - Converts PDF to images for all pages
+   - Runs auto-detection for common fields (look for "Invoice #", "Total:", etc. using regex)
+   - Saves detected regions to database
+   - Emits WebSocket event when complete
+
+4. Create React component BatchUpload that:
+   - Shows drag-drop for multiple files
+   - Displays processing queue status (pending, processing, complete)
+   - Shows thumbnail grid of all documents with status badges
+   - Clicking thumbnail opens DocumentViewer for that document
+```
+
+**Prompt 8 - Template System:**
+```
+Create template matching system:
+
+1. When user saves regions for a document, offer "Save as Template"
+2. Template stores relative positions of fields (normalized coordinates)
+3. When new document is uploaded, run template matching:
+   - Extract text from top 1/3 of page (usually contains vendor info)
+   - Compare against known vendor names in templates
+   - If match >80% confidence, auto-apply template regions
+   - Mark document as "template-suggested" in UI
+
+Database table document_templates:
+  - id, user_id, name, vendor_identifier, region_mappings (JSONB), created_at
+```
+
+---
+
+## Phase 6: Export & Integration (Week 7)
+
+**Prompt 9 - Export:**
+```
+Create export functionality:
+
+GET /api/documents/batch/:batchId/export?format=csv|json|excel
+
+- Join documents with their extraction_regions
+- Map to flat structure: { filename, invoice_number, date, total, vendor, ... }
+- CSV: use fast-csv library
+- Excel: use xlsx library
+- JSON: direct array output
+
+Include download link in response or stream file directly.
+```
+
+---
+
+## Prompt Engineering Tips
+
+**1. Context Management**
+Always include the project structure in your prompts:
+
+```
+Current project structure:
+/src
+  /components
+    DocumentViewer.tsx
+    RegionCanvas.tsx
+  /server
+    /routes
+      documents.js
+    /models
+      Document.js
+```
+
+**2. Interface Contracts**
+Define API contracts upfront to keep frontend/backend in sync:
+
+```
+Expected API response format:
+{ success: true, data: { documentId: string, pageCount: number } }
+
+Expected component props:
+interface DocumentViewerProps {
+  documentId: string;
+  onRegionsExtracted?: (regions: Region[]) => void;
+  mode: 'draw' | 'text-select';
+}
+```
+
+**3. Error Boundaries**
+Add this to every prompt:
+
+```
+Include error handling for:
+- Network failures (retry with exponential backoff)
+- File not found
+- OCR timeout (after 30 seconds)
+- Invalid PDF format
+
+Display user-friendly error messages in the UI.
+```
+
+**4. Testing Prompts**
+After each phase, add:
+
+```
+Write Jest tests for:
+- Region coordinate normalization (test zoom in/out preserves coordinates)
+- OCR accuracy on sample invoice image
+- API endpoint validation (reject files >10MB)
+```
+
+---
+
+## Dependency Order
+
+```
+Week 1: Upload → Viewer (no storage needed, just temp files)
+Week 2: Database → Canvas drawing (need to save regions)
+Week 3: OCR → Backend processing (needs regions from Week 2)
+Week 4: Text extraction → Alternative input method (parallel to Week 3)
+Week 5: Queue system → Batch processing (needs Weeks 1-3)
+Week 6: Templates → Automation (needs Week 5)
+Week 7: Export → Output (needs all previous)
+```
+
+Start with **Phase 1** and get a PDF rendering in the browser. Once you see that working, you'll have validated your core tech choices and can iterate confidently.
+
+Want me to expand any of these specific prompts with more detail?
+
+---
