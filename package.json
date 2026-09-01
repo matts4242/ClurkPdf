@@ -1,9 +1,13 @@
 {
-  "name": "invoice-processor",
+  "name": "clurkpdf",
   "version": "0.1.0",
-  "description": "Intelligent Invoice Batch Processor - Week 1",
+  "description": "Intelligent invoice batch processor — specification stage",
   "private": true,
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
+    "docs:check": "node scripts/check-docs.mjs",
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
     "dev:server": "cd server && npm run dev",
     "dev:client": "cd client && npm run dev",

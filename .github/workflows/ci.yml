@@ -1,0 +1,45 @@
+name: CI
+
+# Runs on every branch, not just main. Work happens on feature branches, and CI
+# that only guards main tells you about a problem after the review.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  docs:
+    name: Specification consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # Checks that resolved contradictions have not reappeared: file limits,
+      # region minimums, enum @map, rejected dependencies, decision references,
+      # and link integrity. See scripts/check-docs.mjs.
+      - name: Check specification consistency
+        run: npm run docs:check
+
+  # Build and test steps land with the Week 1 code. They are deliberately absent
+  # rather than stubbed — a green check that ran no tests is worse than no check.
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    if: ${{ hashFiles('server/package.json', 'client/package.json') != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
