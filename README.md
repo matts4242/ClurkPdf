@@ -10,8 +10,11 @@ extraction, batch queueing, templates, and export.
 
 ## Requirements
 
-- Node.js 20 or newer (developed on 22)
+- Node.js 22.13 or newer (developed on 22.22; CI covers 22.x and 24.x)
 - npm 10 or newer
+
+The floor comes from `pdfjs-dist`, which requires Node 22.13. Node 20 cannot
+run this project.
 
 No database, Docker, or system packages are needed for Week 1. PDF rendering
 runs entirely on prebuilt npm packages.
