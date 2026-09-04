@@ -1,21 +1,17 @@
-import fs from 'node:fs/promises';
 import path from 'node:path';
 import { config } from '../config.js';
-import type { Document, DocumentStatus } from '../types/index.js';
+import { getPrisma } from '../db/client.js';
+import type { Document, DocumentStatus, DocumentWithStats } from '../types/index.js';
 import { resolveWithin } from '../utils/validation.js';
 
 /**
- * Document metadata storage.
+ * Document metadata storage, backed by PostgreSQL.
  *
- * Week 1 has no database, so each document's record lives beside its files at
- * `uploads/{id}/document.json` and is mirrored in an in-memory index for fast
- * reads. Week 2 replaces this module with Prisma; the async signatures here
- * are already shaped for that swap, so callers will not change.
+ * Week 1 kept this in a JSON sidecar beside each upload; Week 2 moves it into
+ * Prisma. The uploaded PDF and its rendered pages still live on disk under
+ * `uploads/{id}/` — only the metadata moved. The call surface is unchanged, so
+ * the controllers did not have to be rewritten.
  */
-
-const METADATA_FILENAME = 'document.json';
-
-const index = new Map<string, Document>();
 
 export const documentDir = (id: string): string => resolveWithin(config.uploadsDir, id);
 
@@ -30,8 +26,6 @@ export const pageImagePath = (id: string, pageNumber: number): string =>
 export const thumbnailPath = (id: string): string =>
   resolveWithin(documentDir(id), 'thumbnail.png');
 
-const metadataPath = (id: string): string => resolveWithin(documentDir(id), METADATA_FILENAME);
-
 /** Public URL of a rendered page image. */
 export const pageImageUrl = (id: string, pageNumber: number): string =>
   `/uploads/${id}/pages/${pageNumber}.png`;
@@ -39,52 +33,93 @@ export const pageImageUrl = (id: string, pageNumber: number): string =>
 /** Public URL of the small page-1 preview. */
 export const thumbnailUrl = (id: string): string => `/uploads/${id}/thumbnail.png`;
 
-/** Rebuild the in-memory index from disk. Called once at startup. */
-export async function loadFromDisk(): Promise<number> {
-  index.clear();
-  let entries: string[];
-  try {
-    entries = await fs.readdir(config.uploadsDir);
-  } catch {
-    return 0;
-  }
+/** Shape Prisma rows into the API's Document type. */
+type DocumentRow = {
+  id: string;
+  filename: string;
+  originalName: string;
+  mimeType: string;
+  size: number;
+  pageCount: number;
+  uploadPath: string;
+  status: string;
+  thumbnailUrl: string | null;
+  errorMessage: string | null;
+  createdAt: Date;
+};
 
-  for (const entry of entries) {
-    try {
-      const raw = await fs.readFile(path.join(config.uploadsDir, entry, METADATA_FILENAME), 'utf8');
-      const parsed = JSON.parse(raw) as Document;
-      if (parsed.id === entry) {
-        // A document left mid-render by a crash is not coming back on its own.
-        if (parsed.status === 'processing') {
-          parsed.status = 'error';
-          parsed.errorMessage = 'Processing was interrupted by a server restart';
-        }
-        index.set(parsed.id, parsed);
-      }
-    } catch {
-      // Directories without readable metadata are partial uploads; skip them.
-    }
-  }
-  return index.size;
+function toDocument(row: DocumentRow): Document {
+  return {
+    id: row.id,
+    filename: row.filename,
+    originalName: row.originalName,
+    mimeType: row.mimeType,
+    size: row.size,
+    pageCount: row.pageCount,
+    uploadPath: row.uploadPath,
+    createdAt: row.createdAt.toISOString(),
+    status: row.status as DocumentStatus,
+    ...(row.thumbnailUrl === null ? {} : { thumbnailUrl: row.thumbnailUrl }),
+    ...(row.errorMessage === null ? {} : { errorMessage: row.errorMessage }),
+  };
 }
 
-async function persist(document: Document): Promise<void> {
-  await fs.mkdir(documentDir(document.id), { recursive: true });
-  await fs.writeFile(metadataPath(document.id), JSON.stringify(document, null, 2), 'utf8');
+/**
+ * Mark documents stranded mid-render by a crash as failed.
+ *
+ * Called once at startup. Nothing is going to finish rendering them, so
+ * leaving them at `processing` would make clients poll forever.
+ */
+export async function failInterruptedProcessing(): Promise<number> {
+  const { count } = await getPrisma().document.updateMany({
+    where: { status: 'processing' },
+    data: { status: 'error', errorMessage: 'Processing was interrupted by a server restart' },
+  });
+  return count;
 }
 
 export async function create(document: Document): Promise<Document> {
-  index.set(document.id, document);
-  await persist(document);
-  return document;
+  const row = await getPrisma().document.create({
+    data: {
+      id: document.id,
+      filename: document.filename,
+      originalName: document.originalName,
+      mimeType: document.mimeType,
+      size: document.size,
+      pageCount: document.pageCount,
+      uploadPath: document.uploadPath,
+      status: document.status,
+      thumbnailUrl: document.thumbnailUrl ?? null,
+      errorMessage: document.errorMessage ?? null,
+    },
+  });
+  return toDocument(row);
 }
 
 export async function get(id: string): Promise<Document | undefined> {
-  return index.get(id);
+  const row = await getPrisma().document.findUnique({ where: { id } });
+  return row ? toDocument(row) : undefined;
+}
+
+/** A document plus its region counts, in one round trip. */
+export async function getWithStats(id: string): Promise<DocumentWithStats | undefined> {
+  const row = await getPrisma().document.findUnique({
+    where: { id },
+    include: { regions: { select: { pageNumber: true } } },
+  });
+  if (!row) return undefined;
+
+  const pages = [...new Set(row.regions.map((region) => region.pageNumber))].sort((a, b) => a - b);
+  return {
+    ...toDocument(row),
+    regionCount: row.regions.length,
+    pagesWithRegions: pages,
+  };
 }
 
 export async function list(): Promise<Document[]> {
-  return [...index.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const rows = await getPrisma().document.findMany({ orderBy: { createdAt: 'desc' } });
+  return rows.map(toDocument);
 }
 
 /** Merge `changes` into a stored document. Returns undefined if it is gone. */
@@ -92,12 +127,19 @@ export async function update(
   id: string,
   changes: Partial<Omit<Document, 'id'>>,
 ): Promise<Document | undefined> {
-  const existing = index.get(id);
+  const existing = await getPrisma().document.findUnique({ where: { id } });
   if (!existing) return undefined;
-  const updated: Document = { ...existing, ...changes };
-  index.set(id, updated);
-  await persist(updated);
-  return updated;
+
+  const row = await getPrisma().document.update({
+    where: { id },
+    data: {
+      ...(changes.status === undefined ? {} : { status: changes.status }),
+      ...(changes.thumbnailUrl === undefined ? {} : { thumbnailUrl: changes.thumbnailUrl }),
+      ...(changes.errorMessage === undefined ? {} : { errorMessage: changes.errorMessage }),
+      ...(changes.pageCount === undefined ? {} : { pageCount: changes.pageCount }),
+    },
+  });
+  return toDocument(row);
 }
 
 export async function setStatus(
@@ -108,10 +150,27 @@ export async function setStatus(
   return update(id, errorMessage === undefined ? { status } : { status, errorMessage });
 }
 
-/** Delete a document's directory and drop it from the index. */
+/**
+ * Delete a document, its regions, and its files.
+ *
+ * Regions go with it through the schema's cascade. The row is removed before
+ * the files so a crash between the two leaves orphaned bytes rather than a
+ * document pointing at files that are gone.
+ */
 export async function remove(id: string): Promise<void> {
-  index.delete(id);
-  await fs.rm(documentDir(id), { recursive: true, force: true });
+  await getPrisma()
+    .document.delete({ where: { id } })
+    .catch(() => undefined);
+  const { rm } = await import('node:fs/promises');
+  await rm(documentDir(id), { recursive: true, force: true });
 }
 
-export const size = (): number => index.size;
+/** Remove upload files for a document that was never committed to the database. */
+export async function removeFilesOnly(id: string): Promise<void> {
+  const { rm } = await import('node:fs/promises');
+  await rm(path.resolve(config.uploadsDir, id), { recursive: true, force: true });
+}
+
+export async function count(): Promise<number> {
+  return getPrisma().document.count();
+}

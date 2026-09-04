@@ -1,26 +1,22 @@
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { ApiResponse, Document } from '../types/index.js';
+import type { ApiResponse, Document, DocumentWithStats } from '../types/index.js';
 import { buildPdf, invalidPdfBytes } from './fixtures.js';
+import { TEST_UPLOADS_DIR } from './setup.js';
 
 /**
- * End-to-end HTTP tests against a real server instance.
+ * End-to-end HTTP tests against a real server instance and a real database.
  *
- * The uploads root is redirected to a temp directory before any module reads
- * `config`, so the suite never touches the developer's `server/uploads`.
+ * `setup.ts` redirects both the uploads root and DATABASE_URL before any
+ * module reads `config`, so this suite never touches development data.
  */
 
 let baseUrl: string;
-let uploadsDir: string;
+const uploadsDir = TEST_UPLOADS_DIR;
 let close: () => Promise<void>;
 
 beforeAll(async () => {
-  uploadsDir = await fs.mkdtemp(path.join(os.tmpdir(), 'invoice-test-'));
-  process.env.UPLOADS_DIR = uploadsDir;
-  process.env.PORT = '0';
-
   const { createApp } = await import('../app.js');
   const server = createApp().listen(0);
   await new Promise<void>((resolve) => server.once('listening', resolve));
@@ -37,7 +33,6 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await close?.();
-  await fs.rm(uploadsDir, { recursive: true, force: true });
 });
 
 async function upload(

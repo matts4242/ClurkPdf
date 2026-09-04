@@ -57,3 +57,28 @@ export const processingError = (message: string, details?: unknown): AppError =>
 
 export const forbidden = (message: string): AppError =>
   new AppError('FORBIDDEN', message, 403);
+
+export const regionNotFound = (id: string): AppError =>
+  new AppError('REGION_NOT_FOUND', `No region with id ${id} on this document`, 404, { id });
+
+export const regionOutOfBounds = (details?: unknown): AppError =>
+  new AppError(
+    'REGION_OUT_OF_BOUNDS',
+    'Region coordinates must lie within the page (0 to 1 on both axes)',
+    400,
+    details,
+  );
+
+export const invalidDimensions = (details?: unknown): AppError =>
+  new AppError('INVALID_DIMENSIONS', 'Region width and height must be greater than 0', 400, details);
+
+export const invalidPage = (pageNumber: number, pageCount: number): AppError =>
+  new AppError(
+    'INVALID_PAGE',
+    `Page ${pageNumber} is outside this document, which has ${pageCount} page(s)`,
+    400,
+    { pageNumber, pageCount },
+  );
+
+export const invalidFieldType = (received: unknown): AppError =>
+  new AppError('INVALID_FIELD_TYPE', 'Unknown field type', 400, { received });

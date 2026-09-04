@@ -31,6 +31,12 @@ export const ERROR_CODES = [
   'FORBIDDEN',
   'ROUTE_NOT_FOUND',
   'INTERNAL_ERROR',
+  // Week 2: regions
+  'REGION_NOT_FOUND',
+  'REGION_OUT_OF_BOUNDS',
+  'INVALID_DIMENSIONS',
+  'INVALID_PAGE',
+  'INVALID_FIELD_TYPE',
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -57,4 +63,76 @@ export interface Document {
   thumbnailUrl?: string;
   /** Populated when `status` is `error`. */
   errorMessage?: string;
+}
+
+/** A document plus a summary of the regions drawn on it. */
+export interface DocumentWithStats extends Document {
+  regionCount: number;
+  /** Page numbers that have at least one region, ascending. */
+  pagesWithRegions: number[];
+}
+
+export const FIELD_TYPES = [
+  'VENDOR_NAME',
+  'VENDOR_ADDRESS',
+  'INVOICE_NUMBER',
+  'INVOICE_DATE',
+  'DUE_DATE',
+  'PO_NUMBER',
+  'SUBTOTAL',
+  'TAX',
+  'TOTAL',
+  'LINE_ITEMS',
+  'CUSTOM',
+] as const;
+
+export type FieldType = (typeof FIELD_TYPES)[number];
+
+export const isFieldType = (value: unknown): value is FieldType =>
+  typeof value === 'string' && (FIELD_TYPES as readonly string[]).includes(value);
+
+/**
+ * A rectangular area of a page marked for extraction.
+ *
+ * Coordinates are normalised to 0-1 against the page, so a region drawn at one
+ * zoom level or render resolution lands in the same place at any other.
+ */
+export interface Region {
+  id: string;
+  documentId: string;
+  /** 1-indexed. */
+  pageNumber: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  fieldType: FieldType;
+  /** Only meaningful when `fieldType` is `CUSTOM`. */
+  fieldLabel?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateRegionRequest {
+  pageNumber: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  fieldType: FieldType;
+  fieldLabel?: string;
+}
+
+export interface UpdateRegionRequest {
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+  fieldType?: FieldType;
+  fieldLabel?: string;
+}
+
+export interface ListRegionsResponse {
+  regions: Region[];
+  total: number;
 }

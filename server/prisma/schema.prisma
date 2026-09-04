@@ -1,0 +1,74 @@
+// Data model for the Intelligent Invoice Batch Processor.
+//
+// Week 2 introduces PostgreSQL. Documents move here from the JSON sidecars
+// Week 1 wrote beside each upload; regions are new.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+// Prisma 7 no longer takes the connection URL here. Migration commands read it
+// from prisma.config.ts; the runtime client gets it through a driver adapter.
+datasource db {
+  provider = "postgresql"
+}
+
+model Document {
+  id           String         @id @default(uuid()) @db.Uuid
+  filename     String
+  originalName String
+  mimeType     String
+  size         Int
+  pageCount    Int
+  uploadPath   String
+  /// uploaded | processing | ready | error
+  status       String
+  thumbnailUrl String?
+  errorMessage String?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  regions      Region[]
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+model Region {
+  id         String    @id @default(uuid()) @db.Uuid
+  documentId String    @db.Uuid
+  /// 1-indexed
+  pageNumber Int
+  /// Normalised 0-1, relative to the page. Resolution independent, so a
+  /// region drawn at one zoom level lands correctly at any other.
+  x          Float
+  y          Float
+  width      Float
+  height     Float
+  fieldType  FieldType
+  /// Only meaningful when fieldType is CUSTOM.
+  fieldLabel String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  document   Document  @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+  @@index([documentId, pageNumber])
+  @@index([fieldType])
+}
+
+enum FieldType {
+  VENDOR_NAME
+  VENDOR_ADDRESS
+  INVOICE_NUMBER
+  INVOICE_DATE
+  DUE_DATE
+  PO_NUMBER
+  SUBTOTAL
+  TAX
+  TOTAL
+  LINE_ITEMS
+  CUSTOM
+}

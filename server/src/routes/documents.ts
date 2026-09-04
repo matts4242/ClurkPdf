@@ -7,6 +7,13 @@ import {
   listDocuments,
   uploadDocument,
 } from '../controllers/documentController.js';
+import {
+  createRegion,
+  deleteRegion,
+  listRegions,
+  listRegionsForPage,
+  updateRegion,
+} from '../controllers/regionController.js';
 import { uploadSingleDocument } from '../middleware/upload.js';
 
 /**
@@ -25,6 +32,14 @@ export const documentsRouter: Router = Router();
 
 documentsRouter.post('/upload', uploadSingleDocument, asyncHandler(uploadDocument));
 documentsRouter.get('/', asyncHandler(listDocuments));
+
+// Region routes come before `/:id` so that neither shadows the other.
+documentsRouter.get('/:id/regions', asyncHandler(listRegions));
+documentsRouter.get('/:id/regions/page/:pageNumber', asyncHandler(listRegionsForPage));
+documentsRouter.post('/:id/regions', asyncHandler(createRegion));
+documentsRouter.put('/:id/regions/:regionId', asyncHandler(updateRegion));
+documentsRouter.delete('/:id/regions/:regionId', asyncHandler(deleteRegion));
+
 documentsRouter.get('/:id', asyncHandler(getDocument));
 documentsRouter.get('/:id/pages/:pageNumber', asyncHandler(getDocumentPage));
 documentsRouter.delete('/:id', asyncHandler(deleteDocument));

@@ -1,0 +1,30 @@
+# Local PostgreSQL for development and tests.
+#
+#   docker compose up -d
+#
+# Creates the development database. The test database is created alongside it
+# by the init script below, because the test suite refuses to run against any
+# database whose name does not end in `_test`.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: invoice-processor-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: invoice
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: invoice_processor
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-test-db.sql:/docker-entrypoint-initdb.d/init-test-db.sql:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U invoice -d invoice_processor']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:

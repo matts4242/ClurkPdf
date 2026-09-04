@@ -41,7 +41,8 @@ export async function uploadDocument(req: Request, res: Response): Promise<void>
     await fs.mkdir(store.pagesDir(id), { recursive: true });
     await fs.writeFile(store.originalPdfPath(id), file.buffer);
   } catch (error) {
-    await store.remove(id);
+    // Nothing is in the database yet, so only the partial files need clearing.
+    await store.removeFilesOnly(id);
     throw processingError('Failed to store the uploaded file', {
       reason: error instanceof Error ? error.message : String(error),
     });
@@ -87,10 +88,15 @@ async function renderPreview(id: string): Promise<void> {
   }
 }
 
-/** GET /api/documents/:id */
+/**
+ * GET /api/documents/:id
+ *
+ * Includes the region counts Week 2 added, so the client can show which pages
+ * already have work on them without a second request.
+ */
 export async function getDocument(req: Request, res: Response): Promise<void> {
   const id = assertUuid(req.params.id);
-  const document = await store.get(id);
+  const document = await store.getWithStats(id);
   if (!document) throw documentNotFound(id);
   ok(res, document);
 }

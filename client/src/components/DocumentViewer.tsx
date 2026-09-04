@@ -3,19 +3,33 @@ import {
   AlertCircle,
   ChevronLeft,
   ChevronRight,
+  Hand,
   Loader2,
+  MousePointer2,
   RotateCw,
+  SquareDashedMousePointer,
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
 import { ApiRequestError, absoluteUrl, fetchDocument, pageImageUrl } from '../api/client';
-import type { Document } from '../types';
+import { FieldTypeSelector } from './FieldTypeSelector';
+import { RegionCanvas } from './RegionCanvas';
+import { RegionList } from './RegionList';
+import { useRegions } from '../hooks/useRegions';
+import type {
+  DocumentWithStats,
+  FieldType,
+  NormalizedRect,
+  ViewerMode,
+} from '../types';
 import { formatBytes, formatPageCount, formatTimestamp } from '../utils/format';
 
 export interface DocumentViewerProps {
   documentId: string;
   onError?: (error: Error) => void;
   onPageChange?: (pageNumber: number) => void;
+  /** Notified when regions are added or removed, so callers can refresh counts. */
+  onRegionsChanged?: () => void;
 }
 
 const ZOOM_LEVELS = [0.5, 1, 1.5, 2, 3, 4] as const;
@@ -40,22 +54,79 @@ const CSS_DPI = 96;
  * Week 2 mounts the region-drawing canvas over the same image, so the page
  * image is kept in a positioned wrapper sized to the rendered bitmap.
  */
-export function DocumentViewer({ documentId, onError, onPageChange }: DocumentViewerProps) {
-  const [document, setDocument] = useState<Document | null>(null);
+export function DocumentViewer({
+  documentId,
+  onError,
+  onPageChange,
+  onRegionsChanged,
+}: DocumentViewerProps) {
+  const [document, setDocument] = useState<DocumentWithStats | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [pageNumber, setPageNumber] = useState(1);
   const [zoomIndex, setZoomIndex] = useState<number>(DEFAULT_ZOOM_INDEX);
   const [imageLoading, setImageLoading] = useState(true);
   const [imageError, setImageError] = useState(false);
-  const [naturalWidth, setNaturalWidth] = useState<number | null>(null);
+  const [natural, setNatural] = useState<{ width: number; height: number } | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
+
+  const [mode, setMode] = useState<ViewerMode>('draw');
+  const [activeFieldType, setActiveFieldType] = useState<FieldType>('INVOICE_NUMBER');
+  const [activeLabel, setActiveLabel] = useState('');
+  const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const panRef = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
+  const onRegionsChangedRef = useRef(onRegionsChanged);
+  onRegionsChangedRef.current = onRegionsChanged;
 
   const zoom = ZOOM_LEVELS[zoomIndex] ?? 1;
+
+  const {
+    regions,
+    error: regionError,
+    create: createRegion,
+    update: updateRegion,
+    remove: removeRegion,
+    clearError: clearRegionError,
+  } = useRegions(documentId);
+
+  // Displayed size of the page image in CSS pixels. The canvas overlay matches
+  // it exactly, which is what makes normalised coordinates line up at any zoom.
+  const displayWidth =
+    natural === null ? 0 : (natural.width * CSS_DPI * zoom) / SERVER_RENDER_DPI;
+  const displayHeight =
+    natural === null ? 0 : (natural.height * CSS_DPI * zoom) / SERVER_RENDER_DPI;
+
+  const handleRegionCreate = useCallback(
+    (rect: NormalizedRect) => {
+      void createRegion({
+        ...rect,
+        pageNumber,
+        fieldType: activeFieldType,
+        ...(activeFieldType === 'CUSTOM' && activeLabel ? { fieldLabel: activeLabel } : {}),
+      }).then((created) => {
+        if (created) {
+          setSelectedRegionId(created.id);
+          onRegionsChangedRef.current?.();
+        }
+      });
+    },
+    [createRegion, pageNumber, activeFieldType, activeLabel],
+  );
+
+  const handleRegionDelete = useCallback(
+    (regionId: string) => {
+      void removeRegion(regionId).then((deleted) => {
+        if (deleted) {
+          setSelectedRegionId((current) => (current === regionId ? null : current));
+          onRegionsChangedRef.current?.();
+        }
+      });
+    },
+    [removeRegion],
+  );
 
   // Load metadata whenever the selected document changes.
   useEffect(() => {
@@ -80,8 +151,13 @@ export function DocumentViewer({ documentId, onError, onPageChange }: DocumentVi
   useEffect(() => {
     setImageLoading(true);
     setImageError(false);
-    setNaturalWidth(null);
+    setNatural(null);
   }, [documentId, pageNumber, reloadToken]);
+
+  // A region selected on one page should not stay selected on another.
+  useEffect(() => {
+    setSelectedRegionId(null);
+  }, [pageNumber]);
 
   const goToPage = useCallback(
     (next: number) => {
@@ -93,24 +169,30 @@ export function DocumentViewer({ documentId, onError, onPageChange }: DocumentVi
     [document, onPageChange],
   );
 
-  // Drag to pan, but only when the image overflows its container.
-  const startPan = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    const container = scrollRef.current;
-    if (!container) return;
-    if (
-      container.scrollWidth <= container.clientWidth &&
-      container.scrollHeight <= container.clientHeight
-    ) {
-      return;
-    }
-    panRef.current = {
-      x: event.clientX,
-      y: event.clientY,
-      left: container.scrollLeft,
-      top: container.scrollTop,
-    };
-    container.setPointerCapture(event.pointerId);
-  }, []);
+  // Drag to pan, but only in pan mode and only when the image overflows.
+  const startPan = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const container = scrollRef.current;
+      if (!container) return;
+      // Pointer events from the region canvas bubble up to this container, so
+      // without this guard a draw drag would pan the page at the same time.
+      if (mode !== 'pan') return;
+      if (
+        container.scrollWidth <= container.clientWidth &&
+        container.scrollHeight <= container.clientHeight
+      ) {
+        return;
+      }
+      panRef.current = {
+        x: event.clientX,
+        y: event.clientY,
+        left: container.scrollLeft,
+        top: container.scrollTop,
+      };
+      container.setPointerCapture(event.pointerId);
+    },
+    [mode],
+  );
 
   const movePan = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     const container = scrollRef.current;
@@ -206,7 +288,64 @@ export function DocumentViewer({ documentId, onError, onPageChange }: DocumentVi
             <ZoomIn className="h-4 w-4" aria-hidden="true" />
           </IconButton>
         </div>
+
+        <div className="flex items-center gap-1 rounded-lg bg-slate-100 p-0.5">
+          <ModeButton
+            label="Draw regions"
+            active={mode === 'draw'}
+            onClick={() => setMode('draw')}
+          >
+            <SquareDashedMousePointer className="h-4 w-4" aria-hidden="true" />
+          </ModeButton>
+          <ModeButton
+            label="Select and edit regions"
+            active={mode === 'select'}
+            onClick={() => setMode('select')}
+          >
+            <MousePointer2 className="h-4 w-4" aria-hidden="true" />
+          </ModeButton>
+          <ModeButton label="Pan the page" active={mode === 'pan'} onClick={() => setMode('pan')}>
+            <Hand className="h-4 w-4" aria-hidden="true" />
+          </ModeButton>
+        </div>
       </header>
+
+      {mode === 'draw' && (
+        <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-slate-50 px-4 py-2">
+          <label htmlFor="active-field-type" className="text-xs text-slate-500">
+            Draw as
+          </label>
+          <div className="w-64">
+            <FieldTypeSelector
+              id="active-field-type"
+              value={activeFieldType}
+              label={activeLabel}
+              onChange={(fieldType, label) => {
+                setActiveFieldType(fieldType);
+                setActiveLabel(label ?? '');
+              }}
+            />
+          </div>
+          <span className="text-xs text-slate-400">Drag a box over the field on the page.</span>
+        </div>
+      )}
+
+      {regionError !== null && (
+        <div
+          role="alert"
+          className="flex items-start gap-2 border-b border-rose-200 bg-rose-50 px-4 py-2 text-xs text-rose-700"
+        >
+          <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          <span className="flex-1">{regionError}</span>
+          <button
+            type="button"
+            onClick={clearRegionError}
+            className="shrink-0 font-medium underline underline-offset-2"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         {/* min-w-0 lets this pane shrink below the page image's width, so a
@@ -239,14 +378,17 @@ export function DocumentViewer({ documentId, onError, onPageChange }: DocumentVi
               </button>
             </div>
           ) : (
-            <div className="mx-auto w-fit">
+            <div className="relative mx-auto w-fit">
               <img
                 key={`${documentId}-${pageNumber}-${reloadToken}`}
                 src={pageImageUrl(documentId, pageNumber)}
                 alt={`Page ${pageNumber} of ${document.originalName}`}
                 draggable={false}
                 onLoad={(event) => {
-                  setNaturalWidth(event.currentTarget.naturalWidth);
+                  setNatural({
+                    width: event.currentTarget.naturalWidth,
+                    height: event.currentTarget.naturalHeight,
+                  });
                   setImageLoading(false);
                 }}
                 onError={() => {
@@ -254,34 +396,75 @@ export function DocumentViewer({ documentId, onError, onPageChange }: DocumentVi
                   setImageError(true);
                 }}
                 style={
-                  naturalWidth === null
+                  natural === null
                     ? { maxWidth: 'none' }
-                    : {
-                        width: `${(naturalWidth * CSS_DPI * zoom) / SERVER_RENDER_DPI}px`,
-                        maxWidth: 'none',
-                      }
+                    : { width: `${displayWidth}px`, maxWidth: 'none' }
                 }
                 className="block rounded shadow-lg"
               />
+
+              {natural !== null && !imageLoading && (
+                <RegionCanvas
+                  pageNumber={pageNumber}
+                  width={displayWidth}
+                  height={displayHeight}
+                  regions={regions}
+                  mode={mode}
+                  selectedRegionId={selectedRegionId}
+                  activeFieldType={activeFieldType}
+                  onRegionCreate={handleRegionCreate}
+                  onRegionUpdate={(regionId, rect) => void updateRegion(regionId, rect)}
+                  onRegionSelect={setSelectedRegionId}
+                  onRegionDelete={handleRegionDelete}
+                />
+              )}
             </div>
           )}
         </div>
 
-        <aside className="shrink-0 border-t border-slate-200 p-4 lg:w-64 lg:border-t-0 lg:border-l">
-          {document.thumbnailUrl !== undefined && (
-            <img
-              src={absoluteUrl(document.thumbnailUrl)}
-              alt=""
-              className="mb-4 w-full rounded border border-slate-200 bg-white"
-            />
-          )}
-          <dl className="space-y-2.5 text-xs">
-            <Field label="Filename" value={document.originalName} />
-            <Field label="Size" value={formatBytes(document.size)} />
-            <Field label="Pages" value={formatPageCount(document.pageCount)} />
-            <Field label="Uploaded" value={formatTimestamp(document.createdAt)} />
-            <Field label="Status" value={document.status} />
-          </dl>
+        <aside className="shrink-0 overflow-y-auto border-t border-slate-200 p-4 lg:w-72 lg:border-t-0 lg:border-l">
+          <div className="mb-3 flex items-center justify-between">
+            <h3 className="text-[11px] font-medium tracking-wide text-slate-400 uppercase">
+              Regions
+            </h3>
+            <span className="text-[11px] text-slate-400">
+              {regions.length === 1 ? '1 region' : `${regions.length} regions`}
+            </span>
+          </div>
+
+          <RegionList
+            regions={regions}
+            selectedRegionId={selectedRegionId}
+            currentPage={pageNumber}
+            onRegionSelect={(regionId) => {
+              setSelectedRegionId(regionId);
+              setMode('select');
+              const region = regions.find((candidate) => candidate.id === regionId);
+              if (region && region.pageNumber !== pageNumber) goToPage(region.pageNumber);
+            }}
+            onRegionDelete={handleRegionDelete}
+            onRegionUpdate={(regionId, updates) => void updateRegion(regionId, updates)}
+          />
+
+          <details className="mt-4 border-t border-slate-200 pt-3">
+            <summary className="cursor-pointer text-[11px] font-medium tracking-wide text-slate-400 uppercase">
+              Document
+            </summary>
+            {document.thumbnailUrl !== undefined && (
+              <img
+                src={absoluteUrl(document.thumbnailUrl)}
+                alt=""
+                className="my-3 w-full rounded border border-slate-200 bg-white"
+              />
+            )}
+            <dl className="space-y-2.5 text-xs">
+              <Field label="Filename" value={document.originalName} />
+              <Field label="Size" value={formatBytes(document.size)} />
+              <Field label="Pages" value={formatPageCount(document.pageCount)} />
+              <Field label="Uploaded" value={formatTimestamp(document.createdAt)} />
+              <Field label="Status" value={document.status} />
+            </dl>
+          </details>
         </aside>
       </div>
     </Panel>
@@ -293,6 +476,35 @@ function Panel({ children }: { children: React.ReactNode }) {
     <section className="flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white">
       {children}
     </section>
+  );
+}
+
+function ModeButton({
+  label,
+  active,
+  onClick,
+  children,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      aria-pressed={active}
+      title={label}
+      className={`rounded-md p-1.5 transition-colors ${
+        active
+          ? 'bg-white text-sky-600 shadow-sm'
+          : 'text-slate-500 hover:bg-white/60 hover:text-slate-900'
+      }`}
+    >
+      {children}
+    </button>
   );
 }
 
