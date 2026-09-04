@@ -150,7 +150,7 @@ export default function App() {
         <FileStack className="h-5 w-5 text-sky-600" aria-hidden="true" />
         <h1 className="text-sm font-semibold text-slate-800">Invoice Processor</h1>
         <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-500">
-          Week 1 &middot; Upload &amp; Viewer
+          Week 2 &middot; Regions
         </span>
         <span className="ml-auto text-xs text-slate-400">
           {documents.length} {documents.length === 1 ? 'document' : 'documents'}

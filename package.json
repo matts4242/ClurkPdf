@@ -18,8 +18,12 @@
     "build:server": "npm run build --workspace server",
     "build:client": "npm run build --workspace client",
     "start": "npm run start --workspace server",
-    "test": "npm run test --workspace server",
-    "typecheck": "npm run typecheck --workspace server && npm run typecheck --workspace client"
+    "test": "npm run test --workspace server && npm run test --workspace client",
+    "typecheck": "npm run typecheck --workspace server && npm run typecheck --workspace client",
+    "test:server": "npm run test --workspace server",
+    "test:client": "npm run test --workspace client",
+    "db:migrate": "npm run db:migrate --workspace server",
+    "db:deploy": "npm run db:deploy --workspace server"
   },
   "devDependencies": {
     "concurrently": "^10.0.5"

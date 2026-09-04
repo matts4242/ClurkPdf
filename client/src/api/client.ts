@@ -1,5 +1,14 @@
 import axios, { AxiosError, type AxiosInstance, type GenericAbortSignal } from 'axios';
-import type { ApiError, ApiResponse, Document } from '../types';
+import type {
+  ApiError,
+  ApiResponse,
+  CreateRegionInput,
+  Document,
+  DocumentWithStats,
+  FieldType,
+  Region,
+  UpdateRegionInput,
+} from '../types';
 
 /** Origin of the API server. Override with VITE_SERVER_ORIGIN. */
 export const SERVER_ORIGIN: string =
@@ -97,8 +106,11 @@ export function uploadDocument(file: File, options: UploadOptions = {}): Promise
   );
 }
 
-export function fetchDocument(id: string, signal?: GenericAbortSignal): Promise<Document> {
-  return unwrap<Document>(http.get(`/documents/${id}`, signal ? { signal } : {}));
+export function fetchDocument(
+  id: string,
+  signal?: GenericAbortSignal,
+): Promise<DocumentWithStats> {
+  return unwrap<DocumentWithStats>(http.get(`/documents/${id}`, signal ? { signal } : {}));
 }
 
 export function listDocuments(signal?: GenericAbortSignal): Promise<Document[]> {
@@ -108,6 +120,54 @@ export function listDocuments(signal?: GenericAbortSignal): Promise<Document[]> 
 export function deleteDocument(id: string): Promise<{ id: string; deleted: boolean }> {
   return unwrap<{ id: string; deleted: boolean }>(http.delete(`/documents/${id}`));
 }
+
+// ---------------------------------------------------------------------------
+// Regions
+// ---------------------------------------------------------------------------
+
+interface RegionListPayload {
+  regions: Region[];
+  total: number;
+}
+
+/** All regions on a document, or just those on one page. */
+export function listRegions(
+  documentId: string,
+  pageNumber?: number,
+  signal?: GenericAbortSignal,
+): Promise<Region[]> {
+  const path =
+    pageNumber === undefined
+      ? `/documents/${documentId}/regions`
+      : `/documents/${documentId}/regions/page/${pageNumber}`;
+  return unwrap<RegionListPayload>(http.get(path, signal ? { signal } : {})).then(
+    (payload) => payload.regions,
+  );
+}
+
+export function createRegion(documentId: string, input: CreateRegionInput): Promise<Region> {
+  return unwrap<{ region: Region }>(http.post(`/documents/${documentId}/regions`, input)).then(
+    (payload) => payload.region,
+  );
+}
+
+export function updateRegion(
+  documentId: string,
+  regionId: string,
+  updates: UpdateRegionInput,
+): Promise<Region> {
+  return unwrap<{ region: Region }>(
+    http.put(`/documents/${documentId}/regions/${regionId}`, updates),
+  ).then((payload) => payload.region);
+}
+
+export function deleteRegion(documentId: string, regionId: string): Promise<void> {
+  return unwrap<{ id: string; deleted: boolean }>(
+    http.delete(`/documents/${documentId}/regions/${regionId}`),
+  ).then(() => undefined);
+}
+
+export type { FieldType };
 
 /** Absolute URL of a rendered page image. */
 export const pageImageUrl = (id: string, pageNumber: number): string =>

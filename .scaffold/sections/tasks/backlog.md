@@ -30,17 +30,32 @@ Also delivered beyond the checklist:
 
 ## Week 2 — Database schema and canvas region drawing
 
-Not started. See `Project_Overview/Week 2.1 Database Schema, Canvas Region Drawing`.
+- [x] PostgreSQL via Docker Compose, Prisma schema for `Document` and `Region`
+      with a `FieldType` enum, indexes, and a cascade delete
+- [x] Migrated `server/src/services/documentStore.ts` from the JSON sidecar
+      store to Prisma, keeping its call surface so controllers were unchanged
+- [x] `RegionCanvas` overlay on the page image, with normalised 0-1 coordinates
+- [x] Region CRUD endpoints and `useRegions` hook
+- [x] `FieldTypeSelector` and `RegionList`
+- [x] `GET /api/documents/:id` returns `regionCount` and `pagesWithRegions`
 
-- [ ] PostgreSQL via Docker Compose, Prisma schema for `documents` and
-      `extraction_regions`
-- [ ] Migrate `server/src/services/documentStore.ts` from the JSON sidecar store
-      to Prisma
-- [ ] `RegionCanvas` overlay on the page image, with normalised 0-1 coordinates
-- [ ] Region CRUD endpoints and `useRegions` hook
-- [ ] `FieldTypeSelector` and `RegionList`
+Also delivered:
+
+- [x] Draw, select, and pan modes; move and corner-resize; Delete key removes
+      the selected region
+- [x] Optimistic move and resize with rollback when the server rejects the edit
+- [x] 22 server tests for regions and 15 client tests for the coordinate maths
+- [x] CI runs a PostgreSQL service; the test suite refuses any database whose
+      name does not end in `_test`
+
+Deviation from the spec, recorded in the README: Prisma 7 no longer accepts
+`url` in the datasource block, so the connection lives in `prisma.config.ts`
+and the runtime client uses the `@prisma/adapter-pg` driver adapter.
 
 ## Weeks 3-7
 
 Not started. One line of intent each in `Project_Overview/Week 3.1` through
 `Week 7.1`: OCR, text-layer extraction, batch queueing, templates, export.
+
+Week 3 (OCR) builds directly on the regions this week added: crop each stored
+rectangle out of the rendered page image and run it through Tesseract.

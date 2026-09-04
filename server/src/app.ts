@@ -31,7 +31,9 @@ export function createApp(): Express {
   app.use(
     cors({
       origin: config.allowedOrigins,
-      methods: ['GET', 'POST', 'DELETE'],
+      // PUT is required for region edits. A missing method here fails only in
+      // a browser, at the preflight, so it is invisible to curl.
+      methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     }),
   );
   if (!config.isTest) {
