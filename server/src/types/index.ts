@@ -109,8 +109,48 @@ export interface Region {
   fieldType: FieldType;
   /** Only meaningful when `fieldType` is `CUSTOM`. */
   fieldLabel?: string;
+
+  /** Week 3: OCR. */
+  ocrStatus: OcrStatus;
+  /** Text as OCR read it. A human edit never overwrites this. */
+  rawText?: string;
+  /** Human correction. When present, this is the value to trust. */
+  correctedText?: string;
+  /** Tesseract's own confidence, 0-100. */
+  confidence?: number;
+  /** Why the last attempt failed, when `ocrStatus` is `ERROR`. */
+  ocrError?: string;
+  ocrAt?: string;
+
   createdAt: string;
   updatedAt: string;
+}
+
+/** A rectangle in normalised 0-1 page coordinates. */
+export interface NormalizedRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export const OCR_STATUSES = ['PENDING', 'PROCESSING', 'DONE', 'ERROR'] as const;
+export type OcrStatus = (typeof OCR_STATUSES)[number];
+
+/** One region's outcome from an OCR run. */
+export interface OcrRegionResult {
+  regionId: string;
+  status: OcrStatus;
+  text?: string;
+  confidence?: number;
+  error?: string;
+}
+
+export interface RunOcrResponse {
+  results: OcrRegionResult[];
+  /** How many regions were recognised, and how many failed. */
+  succeeded: number;
+  failed: number;
 }
 
 export interface CreateRegionRequest {
@@ -130,6 +170,8 @@ export interface UpdateRegionRequest {
   height?: number;
   fieldType?: FieldType;
   fieldLabel?: string;
+  /** Human correction of the OCR text. Pass an empty string to clear it. */
+  correctedText?: string;
 }
 
 export interface ListRegionsResponse {

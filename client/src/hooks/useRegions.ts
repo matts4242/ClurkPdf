@@ -3,6 +3,11 @@ import * as api from '../api/client';
 import { ApiRequestError } from '../api/client';
 import type { CreateRegionInput, Region, UpdateRegionInput } from '../types';
 
+export interface OcrSummary {
+  succeeded: number;
+  failed: number;
+}
+
 export interface UseRegionsReturn {
   regions: Region[];
   loading: boolean;
@@ -12,6 +17,10 @@ export interface UseRegionsReturn {
   remove: (regionId: string) => Promise<boolean>;
   refresh: () => void;
   clearError: () => void;
+  /** Recognise text in some or all regions. */
+  runOcr: (options?: { regionIds?: string[]; onlyPending?: boolean }) => Promise<OcrSummary | null>;
+  /** True while a recognition run is in flight. */
+  ocrRunning: boolean;
 }
 
 /**
@@ -144,5 +153,47 @@ export function useRegions(documentId: string | null): UseRegionsReturn {
   const refresh = useCallback(() => setReloadToken((token) => token + 1), []);
   const clearError = useCallback(() => setError(null), []);
 
-  return { regions, loading, error, create, update, remove, refresh, clearError };
+  const [ocrRunning, setOcrRunning] = useState(false);
+
+  const runOcr = useCallback(
+    async (options: { regionIds?: string[]; onlyPending?: boolean } = {}) => {
+      if (!documentId) return null;
+      setOcrRunning(true);
+      setError(null);
+      try {
+        const summary = await api.runOcr(documentId, options);
+        // The run rewrote text, confidence and status on the server; refetch
+        // rather than trying to merge the per-region results by hand.
+        const reloaded = await api.listRegions(documentId);
+        if (mountedRef.current) {
+          setRegions(reloaded);
+          if (summary.failed > 0) {
+            setError(
+              `${summary.failed} of ${summary.failed + summary.succeeded} regions could not be read.`,
+            );
+          }
+        }
+        return { succeeded: summary.succeeded, failed: summary.failed };
+      } catch (caught) {
+        if (mountedRef.current) setError(describe(caught, 'Could not run OCR'));
+        return null;
+      } finally {
+        if (mountedRef.current) setOcrRunning(false);
+      }
+    },
+    [documentId],
+  );
+
+  return {
+    regions,
+    loading,
+    error,
+    create,
+    update,
+    remove,
+    refresh,
+    clearError,
+    runOcr,
+    ocrRunning,
+  };
 }

@@ -112,6 +112,15 @@ export async function updateRegion(req: Request, res: Response): Promise<void> {
   if (isFieldType(body.fieldType)) updates.fieldType = body.fieldType;
   if (label !== undefined) updates.fieldLabel = label;
 
+  if (body.correctedText !== undefined) {
+    if (typeof body.correctedText !== 'string') {
+      throw invalidRequest('correctedText must be a string', {
+        correctedText: body.correctedText,
+      });
+    }
+    updates.correctedText = body.correctedText;
+  }
+
   if (Object.keys(updates).length === 0) {
     throw invalidRequest('No updatable fields were provided');
   }

@@ -80,6 +80,9 @@ export interface NormalizedRect {
   height: number;
 }
 
+export const OCR_STATUSES = ['PENDING', 'PROCESSING', 'DONE', 'ERROR'] as const;
+export type OcrStatus = (typeof OCR_STATUSES)[number];
+
 export interface Region extends NormalizedRect {
   id: string;
   documentId: string;
@@ -87,8 +90,51 @@ export interface Region extends NormalizedRect {
   pageNumber: number;
   fieldType: FieldType;
   fieldLabel?: string;
+
+  ocrStatus: OcrStatus;
+  /** Text as OCR read it. A human edit never overwrites this. */
+  rawText?: string;
+  /** Human correction. When present, this is the value to trust. */
+  correctedText?: string;
+  /** Tesseract's own confidence, 0-100. */
+  confidence?: number;
+  ocrError?: string;
+  ocrAt?: string;
+
   createdAt: string;
   updatedAt: string;
+}
+
+/** The value to use downstream: the human's correction if there is one. */
+export const regionValue = (region: Region): string =>
+  region.correctedText ?? region.rawText ?? '';
+
+/**
+ * Confidence banding from the specification: green above 90, amber 70-90,
+ * red below 70.
+ */
+export function confidenceBand(confidence: number | undefined): {
+  label: string;
+  className: string;
+} {
+  if (confidence === undefined) return { label: '--', className: 'bg-slate-100 text-slate-500' };
+  if (confidence > 90) return { label: `${Math.round(confidence)}%`, className: 'bg-emerald-100 text-emerald-700' };
+  if (confidence >= 70) return { label: `${Math.round(confidence)}%`, className: 'bg-amber-100 text-amber-700' };
+  return { label: `${Math.round(confidence)}%`, className: 'bg-rose-100 text-rose-700' };
+}
+
+export interface OcrRegionResult {
+  regionId: string;
+  status: OcrStatus;
+  text?: string;
+  confidence?: number;
+  error?: string;
+}
+
+export interface RunOcrResponse {
+  results: OcrRegionResult[];
+  succeeded: number;
+  failed: number;
 }
 
 export interface CreateRegionInput extends NormalizedRect {
@@ -100,6 +146,7 @@ export interface CreateRegionInput extends NormalizedRect {
 export type UpdateRegionInput = Partial<NormalizedRect> & {
   fieldType?: FieldType;
   fieldLabel?: string;
+  correctedText?: string;
 };
 
 /** How pointer input on the page is interpreted. */

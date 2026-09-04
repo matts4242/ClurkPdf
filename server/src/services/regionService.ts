@@ -2,6 +2,7 @@ import { getPrisma } from '../db/client.js';
 import type {
   CreateRegionRequest,
   FieldType,
+  OcrStatus,
   Region,
   UpdateRegionRequest,
 } from '../types/index.js';
@@ -36,6 +37,12 @@ type RegionRow = {
   height: number;
   fieldType: string;
   fieldLabel: string | null;
+  ocrStatus: string;
+  rawText: string | null;
+  correctedText: string | null;
+  confidence: number | null;
+  ocrError: string | null;
+  ocrAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -51,6 +58,12 @@ function toRegion(row: RegionRow): Region {
     height: row.height,
     fieldType: row.fieldType as FieldType,
     ...(row.fieldLabel === null ? {} : { fieldLabel: row.fieldLabel }),
+    ocrStatus: row.ocrStatus as OcrStatus,
+    ...(row.rawText === null ? {} : { rawText: row.rawText }),
+    ...(row.correctedText === null ? {} : { correctedText: row.correctedText }),
+    ...(row.confidence === null ? {} : { confidence: row.confidence }),
+    ...(row.ocrError === null ? {} : { ocrError: row.ocrError }),
+    ...(row.ocrAt === null ? {} : { ocrAt: row.ocrAt.toISOString() }),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -199,6 +212,15 @@ export async function updateRegion(
       ? existing.fieldLabel
       : labelFor(fieldType, updates.fieldLabel ?? existing.fieldLabel ?? undefined);
 
+  // Moving or resizing a region puts it over different pixels, so any text
+  // already read from it — and any human correction of that text — no longer
+  // describes what the rectangle covers. Reset it back to un-recognised.
+  const geometryChanged =
+    round(merged.x) !== existing.x ||
+    round(merged.y) !== existing.y ||
+    round(merged.width) !== existing.width ||
+    round(merged.height) !== existing.height;
+
   const row = await getPrisma().region.update({
     where: { id: regionId },
     data: {
@@ -208,9 +230,65 @@ export async function updateRegion(
       height: round(merged.height),
       fieldType,
       fieldLabel: label,
+      ...(geometryChanged
+        ? {
+            ocrStatus: 'PENDING' as const,
+            rawText: null,
+            correctedText: null,
+            confidence: null,
+            ocrError: null,
+            ocrAt: null,
+          }
+        : {}),
+      // An explicit correction still applies when the rectangle did not move.
+      ...(updates.correctedText === undefined || geometryChanged
+        ? {}
+        : { correctedText: updates.correctedText.trim() || null }),
     },
   });
   return toRegion(row);
+}
+
+// --- OCR bookkeeping -----------------------------------------------------
+
+/** Mark regions as in progress so a concurrent reader sees the run started. */
+export async function markRegionsProcessing(regionIds: string[]): Promise<void> {
+  if (regionIds.length === 0) return;
+  await getPrisma().region.updateMany({
+    where: { id: { in: regionIds } },
+    data: { ocrStatus: 'PROCESSING', ocrError: null },
+  });
+}
+
+/** Store a successful recognition. A human correction is left untouched. */
+export async function saveOcrResult(
+  regionId: string,
+  text: string,
+  confidence: number,
+): Promise<Region> {
+  const row = await getPrisma().region.update({
+    where: { id: regionId },
+    data: {
+      ocrStatus: 'DONE',
+      rawText: text,
+      confidence,
+      ocrError: null,
+      ocrAt: new Date(),
+    },
+  });
+  return toRegion(row);
+}
+
+/** Record a failed recognition against one region. */
+export async function saveOcrError(regionId: string, message: string): Promise<void> {
+  await getPrisma().region.update({
+    where: { id: regionId },
+    data: {
+      ocrStatus: 'ERROR',
+      ocrError: message.slice(0, 500),
+      ocrAt: new Date(),
+    },
+  });
 }
 
 export async function deleteRegion(regionId: string, documentId: string): Promise<void> {
