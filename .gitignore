@@ -4,4 +4,12 @@ dist/
 *.log
 .env
 .env.local
+.env.*.local
+
+# Uploaded PDFs and rendered page images.
+server/uploads/
 uploads/
+
+# TypeScript incremental build info.
+*.tsbuildinfo
+.tmp/
