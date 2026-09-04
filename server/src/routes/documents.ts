@@ -14,6 +14,7 @@ import {
   listRegionsForPage,
   updateRegion,
 } from '../controllers/regionController.js';
+import { runOcr } from '../controllers/ocrController.js';
 import { uploadSingleDocument } from '../middleware/upload.js';
 
 /**
@@ -39,6 +40,8 @@ documentsRouter.get('/:id/regions/page/:pageNumber', asyncHandler(listRegionsFor
 documentsRouter.post('/:id/regions', asyncHandler(createRegion));
 documentsRouter.put('/:id/regions/:regionId', asyncHandler(updateRegion));
 documentsRouter.delete('/:id/regions/:regionId', asyncHandler(deleteRegion));
+
+documentsRouter.post('/:id/ocr', asyncHandler(runOcr));
 
 documentsRouter.get('/:id', asyncHandler(getDocument));
 documentsRouter.get('/:id/pages/:pageNumber', asyncHandler(getDocumentPage));

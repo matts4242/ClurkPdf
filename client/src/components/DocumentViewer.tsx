@@ -7,6 +7,7 @@ import {
   Loader2,
   MousePointer2,
   RotateCw,
+  ScanText,
   SquareDashedMousePointer,
   ZoomIn,
   ZoomOut,
@@ -90,6 +91,8 @@ export function DocumentViewer({
     update: updateRegion,
     remove: removeRegion,
     clearError: clearRegionError,
+    runOcr,
+    ocrRunning,
   } = useRegions(documentId);
 
   // Displayed size of the page image in CSS pixels. The canvas overlay matches
@@ -98,6 +101,9 @@ export function DocumentViewer({
     natural === null ? 0 : (natural.width * CSS_DPI * zoom) / SERVER_RENDER_DPI;
   const displayHeight =
     natural === null ? 0 : (natural.height * CSS_DPI * zoom) / SERVER_RENDER_DPI;
+
+  const readCount = regions.filter((region) => region.ocrStatus === 'DONE').length;
+  const unreadCount = regions.length - readCount;
 
   const handleRegionCreate = useCallback(
     (rect: NormalizedRect) => {
@@ -310,6 +316,37 @@ export function DocumentViewer({
         </div>
       </header>
 
+      <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-white px-4 py-2">
+        <button
+          type="button"
+          onClick={() => void runOcr()}
+          disabled={ocrRunning || regions.length === 0}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {ocrRunning ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+          ) : (
+            <ScanText className="h-3.5 w-3.5" aria-hidden="true" />
+          )}
+          {ocrRunning ? 'Reading...' : 'Run OCR'}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => void runOcr({ onlyPending: true })}
+          disabled={ocrRunning || unreadCount === 0}
+          className="rounded-lg px-2 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Unread only{unreadCount > 0 ? ` (${unreadCount})` : ''}
+        </button>
+
+        <span className="text-xs text-slate-400">
+          {regions.length === 0
+            ? 'Draw a region first.'
+            : `${readCount} of ${regions.length} read`}
+        </span>
+      </div>
+
       {mode === 'draw' && (
         <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-slate-50 px-4 py-2">
           <label htmlFor="active-field-type" className="text-xs text-slate-500">
@@ -444,6 +481,8 @@ export function DocumentViewer({
             }}
             onRegionDelete={handleRegionDelete}
             onRegionUpdate={(regionId, updates) => void updateRegion(regionId, updates)}
+            onRegionRerunOcr={(regionId) => void runOcr({ regionIds: [regionId] })}
+            ocrRunning={ocrRunning}
           />
 
           <details className="mt-4 border-t border-slate-200 pt-3">

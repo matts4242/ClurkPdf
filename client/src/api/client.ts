@@ -7,6 +7,7 @@ import type {
   DocumentWithStats,
   FieldType,
   Region,
+  RunOcrResponse,
   UpdateRegionInput,
 } from '../types';
 
@@ -165,6 +166,25 @@ export function deleteRegion(documentId: string, regionId: string): Promise<void
   return unwrap<{ id: string; deleted: boolean }>(
     http.delete(`/documents/${documentId}/regions/${regionId}`),
   ).then(() => undefined);
+}
+
+export interface RunOcrOptions {
+  /** Limit the run to these regions. Omit to process every region. */
+  regionIds?: string[];
+  /** Skip regions that already have text. */
+  onlyPending?: boolean;
+}
+
+/**
+ * Recognise text in a document's regions.
+ *
+ * Recognition is slower than the other calls — a page of regions takes seconds
+ * — so this one gets its own longer timeout.
+ */
+export function runOcr(documentId: string, options: RunOcrOptions = {}): Promise<RunOcrResponse> {
+  return unwrap<RunOcrResponse>(
+    http.post(`/documents/${documentId}/ocr`, options, { timeout: 180_000 }),
+  );
 }
 
 export type { FieldType };

@@ -49,6 +49,21 @@ model Region {
   fieldType  FieldType
   /// Only meaningful when fieldType is CUSTOM.
   fieldLabel String?
+
+  // --- OCR (Week 3) ---
+  /// pending | processing | done | error
+  ocrStatus  OcrStatus @default(PENDING)
+  /// Text exactly as OCR read it. Never overwritten by a human edit.
+  rawText    String?
+  /// Human correction. When present this is the value downstream weeks use.
+  correctedText String?
+  /// Tesseract's own confidence, 0-100.
+  confidence Float?
+  /// Why the last OCR attempt failed, when ocrStatus is ERROR.
+  ocrError   String?
+  /// When OCR last completed for this region.
+  ocrAt      DateTime?
+
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
 
@@ -57,6 +72,14 @@ model Region {
   @@index([documentId])
   @@index([documentId, pageNumber])
   @@index([fieldType])
+  @@index([documentId, ocrStatus])
+}
+
+enum OcrStatus {
+  PENDING
+  PROCESSING
+  DONE
+  ERROR
 }
 
 enum FieldType {

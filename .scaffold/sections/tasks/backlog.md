@@ -52,10 +52,37 @@ Deviation from the spec, recorded in the README: Prisma 7 no longer accepts
 `url` in the datasource block, so the connection lives in `prisma.config.ts`
 and the runtime client uses the `@prisma/adapter-pg` driver adapter.
 
-## Weeks 3-7
+## Week 3 — OCR
 
-Not started. One line of intent each in `Project_Overview/Week 3.1` through
-`Week 7.1`: OCR, text-layer extraction, batch queueing, templates, export.
+- [x] `ocrService` crops each region out of the rendered page and runs it
+      through Tesseract.js against a shared worker pool
+- [x] `POST /api/documents/:id/ocr`, processing every region or a named subset,
+      with per-region error isolation
+- [x] Results saved to the region rows: `rawText`, `confidence`, `ocrStatus`,
+      `ocrError`, `ocrAt`
+- [x] Confidence shown colour-coded in the UI (green >90, amber 70-90, red <70)
+- [x] Text correction panel with inline editing
 
-Week 3 (OCR) builds directly on the regions this week added: crop each stored
-rectangle out of the rendered page image and run it through Tesseract.
+Also delivered:
+
+- [x] `correctedText` is stored separately from `rawText`, so the original
+      reading survives an edit and can be reverted to
+- [x] Moving or resizing a region clears its OCR text, since the rectangle then
+      covers different pixels
+- [x] Re-read a single region, or only the ones not yet read
+- [x] 13 OCR tests running real recognition against a generated invoice
+
+Deviations from the spec, recorded in the README: the endpoint takes region ids
+rather than raw rectangles (the regions already live in the database), and
+recognition is bounded by `OCR_CONCURRENCY` rather than an unbounded
+`Promise.all`, because each job holds a WASM instance.
+
+## Weeks 4-7
+
+Not started. One line of intent each in `Project_Overview/Week 4.1` through
+`Week 7.1`: text-layer extraction, batch queueing, templates, export.
+
+Week 4 is the alternative to OCR rather than a follow-on: extract the PDF's own
+text layer with positions, so a born-digital invoice can be tagged by selecting
+real text instead of drawing boxes. `pdfjs-dist` is already a dependency and
+already exposes `getTextContent()`.

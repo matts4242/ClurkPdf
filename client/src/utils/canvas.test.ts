@@ -23,6 +23,7 @@ const region = (over: Partial<Region> = {}): Region => ({
   width: 0.3,
   height: 0.1,
   fieldType: 'TOTAL',
+  ocrStatus: 'PENDING',
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
   ...over,

@@ -1,6 +1,7 @@
 import { createApp } from './app.js';
 import { config } from './config.js';
 import { connectDatabase, disconnectDatabase } from './db/client.js';
+import { terminateOcr } from './services/ocrService.js';
 import { count, failInterruptedProcessing } from './services/documentStore.js';
 import { ensureUploadsDirectory } from './services/pdfService.js';
 
@@ -33,6 +34,8 @@ async function main(): Promise<void> {
     console.log(`\n${signal} received, closing server...`);
 
     server.close(async (error) => {
+      // Tesseract workers hold WASM instances that keep the process alive.
+      await terminateOcr().catch(() => undefined);
       await disconnectDatabase().catch(() => undefined);
       if (error) {
         console.error('Error during shutdown:', error);
