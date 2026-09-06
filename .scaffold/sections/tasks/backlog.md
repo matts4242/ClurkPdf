@@ -77,12 +77,38 @@ rather than raw rectangles (the regions already live in the database), and
 recognition is bounded by `OCR_CONCURRENCY` rather than an unbounded
 `Promise.all`, because each job holds a WASM instance.
 
-## Weeks 4-7
+## Week 4 — Text layer extraction
 
-Not started. One line of intent each in `Project_Overview/Week 4.1` through
-`Week 7.1`: text-layer extraction, batch queueing, templates, export.
+- [x] `textLayerService` extracts positioned text runs with pdf.js, normalised
+      to the same 0-1 space as regions
+- [x] `GET /api/documents/:id/text-layer/:pageNumber`, reporting `hasText:
+      false` for a scan
+- [x] `TextLayer` component renders an invisible, selectable copy of the page
+      text over the image
+- [x] Floating toolbar on selection, with 1-9 keyboard shortcuts
+- [x] Smart snapping to word and line boundaries
 
-Week 4 is the alternative to OCR rather than a follow-on: extract the PDF's own
-text layer with positions, so a born-digital invoice can be tagged by selecting
-real text instead of drawing boxes. `pdfjs-dist` is already a dependency and
-already exposes `getTextContent()`.
+Also delivered:
+
+- [x] Highlighting produces an ordinary `Region` with `textSource: TEXT_LAYER`,
+      so corrections, the sidebar and Week 7's export need no second path
+- [x] Text is derived server-side from the rectangle, so a moved text-layer
+      region re-reads itself rather than dropping back to PENDING
+- [x] The stored rectangle snaps onto the text it captured
+- [x] 17 text-layer tests, 95 across the project
+
+Two bugs found while testing this slice: the region canvas sat over the text
+layer and swallowed the caret, and the first overlap rule required half a text
+run to be inside the rectangle — which no ordinary selection satisfies, because
+pdf.js emits a whole line as one run.
+
+## Weeks 5-7
+
+Not started. One line of intent each in `Project_Overview/Week 5.1` through
+`Week 7.1`: batch queueing, templates, export.
+
+Week 5 needs Redis and Bull, and replaces the serial upload loop in `App.tsx`
+with a real queue plus WebSocket progress. Week 7's export is the first point
+where the two capture modes have to produce one flat row per document; because
+both already write to `Region`, that should be a single query rather than a
+merge.

@@ -8,6 +8,7 @@ import type {
   FieldType,
   Region,
   RunOcrResponse,
+  TextLayerData,
   UpdateRegionInput,
 } from '../types';
 
@@ -184,6 +185,17 @@ export interface RunOcrOptions {
 export function runOcr(documentId: string, options: RunOcrOptions = {}): Promise<RunOcrResponse> {
   return unwrap<RunOcrResponse>(
     http.post(`/documents/${documentId}/ocr`, options, { timeout: 180_000 }),
+  );
+}
+
+/** The PDF's own text for one page, with normalised positions. */
+export function fetchTextLayer(
+  documentId: string,
+  pageNumber: number,
+  signal?: GenericAbortSignal,
+): Promise<TextLayerData> {
+  return unwrap<TextLayerData>(
+    http.get(`/documents/${documentId}/text-layer/${pageNumber}`, signal ? { signal } : {}),
   );
 }
 

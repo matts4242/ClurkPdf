@@ -9,18 +9,28 @@ import {
   RotateCw,
   ScanText,
   SquareDashedMousePointer,
+  TextCursorInput,
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
-import { ApiRequestError, absoluteUrl, fetchDocument, pageImageUrl } from '../api/client';
+import {
+  ApiRequestError,
+  absoluteUrl,
+  fetchDocument,
+  fetchTextLayer,
+  pageImageUrl,
+} from '../api/client';
 import { FieldTypeSelector } from './FieldTypeSelector';
 import { RegionCanvas } from './RegionCanvas';
 import { RegionList } from './RegionList';
+import { SelectionToolbar } from './SelectionToolbar';
+import { TextLayer, type TextSelection } from './TextLayer';
 import { useRegions } from '../hooks/useRegions';
 import type {
   DocumentWithStats,
   FieldType,
   NormalizedRect,
+  TextLayerData,
   ViewerMode,
 } from '../types';
 import { formatBytes, formatPageCount, formatTimestamp } from '../utils/format';
@@ -74,6 +84,8 @@ export function DocumentViewer({
   const [activeFieldType, setActiveFieldType] = useState<FieldType>('INVOICE_NUMBER');
   const [activeLabel, setActiveLabel] = useState('');
   const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
+  const [textLayer, setTextLayer] = useState<TextLayerData | null>(null);
+  const [textSelection, setTextSelection] = useState<TextSelection | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const panRef = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
@@ -164,6 +176,49 @@ export function DocumentViewer({
   useEffect(() => {
     setSelectedRegionId(null);
   }, [pageNumber]);
+
+  // Fetch the page's own text only when highlight mode needs it.
+  useEffect(() => {
+    if (mode !== 'text') return;
+
+    const controller = new AbortController();
+    setTextSelection(null);
+    fetchTextLayer(documentId, pageNumber, controller.signal)
+      .then(setTextLayer)
+      .catch((error: unknown) => {
+        if (error instanceof ApiRequestError && error.code === 'CANCELLED') return;
+        setTextLayer(null);
+      });
+
+    return () => controller.abort();
+  }, [documentId, pageNumber, mode]);
+
+  // Leaving highlight mode drops any pending selection.
+  useEffect(() => {
+    if (mode !== 'text') setTextSelection(null);
+  }, [mode]);
+
+  const handleTextAssign = useCallback(
+    (fieldType: FieldType) => {
+      if (!textSelection) return;
+      void createRegion({
+        ...textSelection.rect,
+        pageNumber,
+        fieldType,
+        // The server re-reads the text from the rectangle rather than trusting
+        // what the browser selected, so the two can never drift apart.
+        textSource: 'TEXT_LAYER',
+      }).then((created) => {
+        if (created) {
+          setSelectedRegionId(created.id);
+          onRegionsChangedRef.current?.();
+        }
+      });
+      window.getSelection()?.removeAllRanges();
+      setTextSelection(null);
+    },
+    [createRegion, pageNumber, textSelection],
+  );
 
   const goToPage = useCallback(
     (next: number) => {
@@ -310,6 +365,13 @@ export function DocumentViewer({
           >
             <MousePointer2 className="h-4 w-4" aria-hidden="true" />
           </ModeButton>
+          <ModeButton
+            label="Highlight the document's own text"
+            active={mode === 'text'}
+            onClick={() => setMode('text')}
+          >
+            <TextCursorInput className="h-4 w-4" aria-hidden="true" />
+          </ModeButton>
           <ModeButton label="Pan the page" active={mode === 'pan'} onClick={() => setMode('pan')}>
             <Hand className="h-4 w-4" aria-hidden="true" />
           </ModeButton>
@@ -346,6 +408,23 @@ export function DocumentViewer({
             : `${readCount} of ${regions.length} read`}
         </span>
       </div>
+
+      {mode === 'text' && (
+        <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-slate-50 px-4 py-2">
+          {textLayer === null ? (
+            <span className="text-xs text-slate-400">Loading the page text...</span>
+          ) : textLayer.hasText ? (
+            <span className="text-xs text-slate-500">
+              Select text on the page, then pick a field. Double-click a word, triple-click a
+              line, or press 1-9 to tag.
+            </span>
+          ) : (
+            <span className="text-xs text-amber-700">
+              This page has no text layer — it is a scan. Draw a region and run OCR instead.
+            </span>
+          )}
+        </div>
+      )}
 
       {mode === 'draw' && (
         <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-slate-50 px-4 py-2">
@@ -439,6 +518,25 @@ export function DocumentViewer({
                 }
                 className="block rounded shadow-lg"
               />
+
+              {natural !== null && !imageLoading && mode === 'text' && textLayer !== null && (
+                <>
+                  <TextLayer
+                    textItems={textLayer.textItems}
+                    width={displayWidth}
+                    height={displayHeight}
+                    onSelect={setTextSelection}
+                  />
+                  {textSelection !== null && (
+                    <SelectionToolbar
+                      text={textSelection.text}
+                      anchor={textSelection.anchor}
+                      onAssign={handleTextAssign}
+                      onDismiss={() => setTextSelection(null)}
+                    />
+                  )}
+                </>
+              )}
 
               {natural !== null && !imageLoading && (
                 <RegionCanvas

@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import * as regions from '../services/regionService.js';
 import {
   isFieldType,
+  isTextSource,
   type ApiResponse,
   type CreateRegionRequest,
   type ListRegionsResponse,
@@ -83,6 +84,13 @@ export async function createRegion(req: Request, res: Response): Promise<void> {
 
   const label = readFieldLabel(body);
   if (label !== undefined) payload.fieldLabel = label;
+
+  if (body.textSource !== undefined) {
+    if (!isTextSource(body.textSource)) {
+      throw invalidRequest('Unknown textSource', { received: body.textSource });
+    }
+    payload.textSource = body.textSource;
+  }
 
   const region: Region = await regions.createRegion(documentId, payload);
   ok(res, { region }, 201);

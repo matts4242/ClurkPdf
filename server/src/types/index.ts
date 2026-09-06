@@ -110,6 +110,8 @@ export interface Region {
   /** Only meaningful when `fieldType` is `CUSTOM`. */
   fieldLabel?: string;
 
+  /** Where `rawText` came from. */
+  textSource: TextSource;
   /** Week 3: OCR. */
   ocrStatus: OcrStatus;
   /** Text as OCR read it. A human edit never overwrites this. */
@@ -137,6 +139,34 @@ export interface NormalizedRect {
 export const OCR_STATUSES = ['PENDING', 'PROCESSING', 'DONE', 'ERROR'] as const;
 export type OcrStatus = (typeof OCR_STATUSES)[number];
 
+export const TEXT_SOURCES = ['NONE', 'OCR', 'TEXT_LAYER'] as const;
+export type TextSource = (typeof TEXT_SOURCES)[number];
+
+export const isTextSource = (value: unknown): value is TextSource =>
+  typeof value === 'string' && (TEXT_SOURCES as readonly string[]).includes(value);
+
+/** One positioned run of text from the PDF's own text layer. */
+export interface TextItem {
+  text: string;
+  /** Normalised 0-1, y measured down from the top of the page. */
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** Font height in PDF points, useful for styling the overlay. */
+  fontSize: number;
+}
+
+export interface TextLayer {
+  pageNumber: number;
+  /** Page size in PDF points, for reference. */
+  pageWidth: number;
+  pageHeight: number;
+  textItems: TextItem[];
+  /** False for a scanned page, which has no text layer and needs OCR. */
+  hasText: boolean;
+}
+
 /** One region's outcome from an OCR run. */
 export interface OcrRegionResult {
   regionId: string;
@@ -161,6 +191,12 @@ export interface CreateRegionRequest {
   height: number;
   fieldType: FieldType;
   fieldLabel?: string;
+  /**
+   * `TEXT_LAYER` fills the region's text from the PDF's own text layer at
+   * creation time, which is what the highlight mode uses. Anything else leaves
+   * the region unread until OCR runs.
+   */
+  textSource?: TextSource;
 }
 
 export interface UpdateRegionRequest {

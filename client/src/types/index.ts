@@ -83,6 +83,29 @@ export interface NormalizedRect {
 export const OCR_STATUSES = ['PENDING', 'PROCESSING', 'DONE', 'ERROR'] as const;
 export type OcrStatus = (typeof OCR_STATUSES)[number];
 
+export const TEXT_SOURCES = ['NONE', 'OCR', 'TEXT_LAYER'] as const;
+export type TextSource = (typeof TEXT_SOURCES)[number];
+
+/** One positioned run of text from the PDF's own text layer. */
+export interface TextItem {
+  text: string;
+  /** Normalised 0-1, y measured down from the top of the page. */
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  fontSize: number;
+}
+
+export interface TextLayerData {
+  pageNumber: number;
+  pageWidth: number;
+  pageHeight: number;
+  textItems: TextItem[];
+  /** False for a scanned page, which has no text layer and needs OCR. */
+  hasText: boolean;
+}
+
 export interface Region extends NormalizedRect {
   id: string;
   documentId: string;
@@ -91,6 +114,8 @@ export interface Region extends NormalizedRect {
   fieldType: FieldType;
   fieldLabel?: string;
 
+  /** Where `rawText` came from. */
+  textSource: TextSource;
   ocrStatus: OcrStatus;
   /** Text as OCR read it. A human edit never overwrites this. */
   rawText?: string;
@@ -141,6 +166,8 @@ export interface CreateRegionInput extends NormalizedRect {
   pageNumber: number;
   fieldType: FieldType;
   fieldLabel?: string;
+  /** `TEXT_LAYER` asks the server to fill the text from the PDF itself. */
+  textSource?: TextSource;
 }
 
 export type UpdateRegionInput = Partial<NormalizedRect> & {
@@ -150,7 +177,7 @@ export type UpdateRegionInput = Partial<NormalizedRect> & {
 };
 
 /** How pointer input on the page is interpreted. */
-export type ViewerMode = 'pan' | 'draw' | 'select';
+export type ViewerMode = 'pan' | 'draw' | 'select' | 'text';
 
 /** Display name for a region, falling back to its field type. */
 export const regionLabel = (region: Region): string =>

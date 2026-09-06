@@ -261,7 +261,12 @@ export function RegionCanvas({
       style={{ width: `${width}px`, height: `${height}px` }}
       className={`absolute inset-0 ${
         mode === 'draw' ? 'cursor-crosshair' : mode === 'select' ? 'cursor-default' : 'cursor-grab'
-      } ${mode === 'pan' ? 'pointer-events-none' : ''}`}
+      } ${
+        // In pan and highlight modes the canvas is display only: pan belongs to
+        // the scroll container beneath, and highlighting needs the caret to
+        // reach the text layer, which this would otherwise intercept.
+        mode === 'pan' || mode === 'text' ? 'pointer-events-none' : ''
+      }`}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
