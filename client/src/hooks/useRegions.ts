@@ -10,12 +10,10 @@ export interface OcrSummary {
 
 export interface UseRegionsReturn {
   regions: Region[];
-  loading: boolean;
   error: string | null;
   create: (input: CreateRegionInput) => Promise<Region | null>;
   update: (regionId: string, updates: UpdateRegionInput) => Promise<Region | null>;
   remove: (regionId: string) => Promise<boolean>;
-  refresh: () => void;
   clearError: () => void;
   /** Recognise text in some or all regions. */
   runOcr: (options?: { regionIds?: string[]; onlyPending?: boolean }) => Promise<OcrSummary | null>;
@@ -33,9 +31,7 @@ export interface UseRegionsReturn {
  */
 export function useRegions(documentId: string | null): UseRegionsReturn {
   const [regions, setRegions] = useState<Region[]>([]);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [reloadToken, setReloadToken] = useState(0);
 
   const mountedRef = useRef(true);
   useEffect(() => {
@@ -52,7 +48,6 @@ export function useRegions(documentId: string | null): UseRegionsReturn {
     }
 
     const controller = new AbortController();
-    setLoading(true);
     setError(null);
 
     api
@@ -65,13 +60,10 @@ export function useRegions(documentId: string | null): UseRegionsReturn {
         if (mountedRef.current) {
           setError(caught instanceof Error ? caught.message : 'Could not load regions');
         }
-      })
-      .finally(() => {
-        if (mountedRef.current) setLoading(false);
       });
 
     return () => controller.abort();
-  }, [documentId, reloadToken]);
+  }, [documentId]);
 
   const describe = (caught: unknown, fallback: string): string =>
     caught instanceof Error ? caught.message : fallback;
@@ -150,7 +142,6 @@ export function useRegions(documentId: string | null): UseRegionsReturn {
     [documentId],
   );
 
-  const refresh = useCallback(() => setReloadToken((token) => token + 1), []);
   const clearError = useCallback(() => setError(null), []);
 
   const [ocrRunning, setOcrRunning] = useState(false);
@@ -184,16 +175,5 @@ export function useRegions(documentId: string | null): UseRegionsReturn {
     [documentId],
   );
 
-  return {
-    regions,
-    loading,
-    error,
-    create,
-    update,
-    remove,
-    refresh,
-    clearError,
-    runOcr,
-    ocrRunning,
-  };
+  return { regions, error, create, update, remove, clearError, runOcr, ocrRunning };
 }

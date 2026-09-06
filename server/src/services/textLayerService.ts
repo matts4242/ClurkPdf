@@ -95,21 +95,6 @@ export async function getTextLayer(
   }
 }
 
-/**
- * The text lying inside a rectangle, in reading order.
- *
- * Used both when a region is first created from a text selection and whenever
- * one is moved, so a text-layer region always describes the words it currently
- * covers rather than the ones it covered when it was drawn.
- */
-export async function getTextInRect(
-  documentId: string,
-  pageNumber: number,
-  rect: NormalizedRect,
-): Promise<string> {
-  return (await snapToText(documentId, pageNumber, rect)).text;
-}
-
 export interface SnappedText {
   /** Text of every run the rectangle touches, in reading order. */
   text: string;

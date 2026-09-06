@@ -80,11 +80,11 @@ async function renderPreview(id: string): Promise<void> {
     const thumbnail = await renderPageToPng(source, 1, { targetWidth: config.thumbnailWidth });
     await fs.writeFile(store.thumbnailPath(id), thumbnail);
 
-    await store.update(id, { status: 'ready', thumbnailUrl: store.thumbnailUrl(id) });
+    await store.setStatus(id, 'ready', { thumbnailUrl: store.thumbnailUrl(id) });
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     console.error(`[preview] document ${id} failed to render:`, reason);
-    await store.setStatus(id, 'error', 'Failed to convert PDF to image');
+    await store.setStatus(id, 'error', { errorMessage: 'Failed to convert PDF to image' });
   }
 }
 

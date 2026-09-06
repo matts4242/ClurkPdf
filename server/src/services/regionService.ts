@@ -3,6 +3,7 @@ import { snapToText } from './textLayerService.js';
 import type {
   CreateRegionRequest,
   FieldType,
+  NormalizedRect,
   OcrStatus,
   Region,
   TextSource,
@@ -73,20 +74,13 @@ function toRegion(row: RegionRow): Region {
   };
 }
 
-interface Rect {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
 /**
  * Reject rectangles that fall outside the page or have no area.
  *
  * Checking the far edge as well as the origin is what stops a region from
  * hanging off the right or bottom of the page.
  */
-function assertRectangleFitsPage(rect: Rect): void {
+function assertRectangleFitsPage(rect: NormalizedRect): void {
   const { x, y, width, height } = rect;
 
   // Check only the four rectangle fields by name; callers may hand in a wider
@@ -139,7 +133,7 @@ export async function createRegion(
     throw invalidPage(data.pageNumber, pageCount);
   }
 
-  const rect: Rect = { x: data.x, y: data.y, width: data.width, height: data.height };
+  const rect: NormalizedRect = { x: data.x, y: data.y, width: data.width, height: data.height };
   assertRectangleFitsPage(rect);
 
   // A region highlighted over the PDF's own text is already readable, so fill
@@ -177,7 +171,7 @@ export async function createRegion(
 async function readTextLayer(
   documentId: string,
   pageNumber: number,
-  rect: Rect,
+  rect: NormalizedRect,
 ): Promise<{
   textSource: 'TEXT_LAYER';
   ocrStatus: 'DONE';
@@ -224,18 +218,6 @@ export async function getRegionsByDocument(
   return rows.map(toRegion);
 }
 
-export async function getRegionsByFieldType(
-  documentId: string,
-  fieldType: FieldType,
-): Promise<Region[]> {
-  await getPageCount(documentId);
-  const rows = await getPrisma().region.findMany({
-    where: { documentId, fieldType },
-    orderBy: [{ pageNumber: 'asc' }, { createdAt: 'asc' }],
-  });
-  return rows.map(toRegion);
-}
-
 /**
  * Update a region.
  *
@@ -256,7 +238,7 @@ export async function updateRegion(
 
   // Validate the rectangle as it will be after the merge, not just the fields
   // that were sent — a lone `width` can still push the region off the page.
-  const merged: Rect = {
+  const merged: NormalizedRect = {
     x: updates.x ?? existing.x,
     y: updates.y ?? existing.y,
     width: updates.width ?? existing.width,

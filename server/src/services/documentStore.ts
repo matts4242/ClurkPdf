@@ -26,10 +26,6 @@ export const pageImagePath = (id: string, pageNumber: number): string =>
 export const thumbnailPath = (id: string): string =>
   resolveWithin(documentDir(id), 'thumbnail.png');
 
-/** Public URL of a rendered page image. */
-export const pageImageUrl = (id: string, pageNumber: number): string =>
-  `/uploads/${id}/pages/${pageNumber}.png`;
-
 /** Public URL of the small page-1 preview. */
 export const thumbnailUrl = (id: string): string => `/uploads/${id}/thumbnail.png`;
 
@@ -122,32 +118,31 @@ export async function list(): Promise<Document[]> {
   return rows.map(toDocument);
 }
 
-/** Merge `changes` into a stored document. Returns undefined if it is gone. */
-export async function update(
-  id: string,
-  changes: Partial<Omit<Document, 'id'>>,
-): Promise<Document | undefined> {
-  const existing = await getPrisma().document.findUnique({ where: { id } });
-  if (!existing) return undefined;
-
-  const row = await getPrisma().document.update({
-    where: { id },
-    data: {
-      ...(changes.status === undefined ? {} : { status: changes.status }),
-      ...(changes.thumbnailUrl === undefined ? {} : { thumbnailUrl: changes.thumbnailUrl }),
-      ...(changes.errorMessage === undefined ? {} : { errorMessage: changes.errorMessage }),
-      ...(changes.pageCount === undefined ? {} : { pageCount: changes.pageCount }),
-    },
-  });
-  return toDocument(row);
-}
-
+/**
+ * Move a document to a new status once page rendering finishes.
+ *
+ * These are the only fields anything updates after creation, so the signature
+ * says so rather than accepting a partial Document and quietly ignoring most
+ * of it.
+ */
 export async function setStatus(
   id: string,
   status: DocumentStatus,
-  errorMessage?: string,
+  extra: { thumbnailUrl?: string; errorMessage?: string } = {},
 ): Promise<Document | undefined> {
-  return update(id, errorMessage === undefined ? { status } : { status, errorMessage });
+  const row = await getPrisma()
+    .document.update({
+      where: { id },
+      data: {
+        status,
+        ...(extra.thumbnailUrl === undefined ? {} : { thumbnailUrl: extra.thumbnailUrl }),
+        ...(extra.errorMessage === undefined ? {} : { errorMessage: extra.errorMessage }),
+      },
+    })
+    // The document was deleted while its preview was rendering.
+    .catch(() => null);
+
+  return row ? toDocument(row) : undefined;
 }
 
 /**

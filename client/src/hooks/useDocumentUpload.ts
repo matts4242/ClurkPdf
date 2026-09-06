@@ -15,7 +15,6 @@ export interface UseDocumentUploadReturn {
   error: string | null;
   /** Abort an upload in flight. */
   cancel: () => void;
-  reset: () => void;
 }
 
 /**
@@ -134,11 +133,5 @@ export function useDocumentUpload(): UseDocumentUploadReturn {
     setError(null);
   }, []);
 
-  const reset = useCallback(() => {
-    setStatus('idle');
-    setProgress(0);
-    setError(null);
-  }, []);
-
-  return { upload, progress, status, error, cancel, reset };
+  return { upload, progress, status, error, cancel };
 }
