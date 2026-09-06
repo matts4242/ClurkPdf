@@ -55,6 +55,10 @@ scripts/    Database bootstrap for docker-compose
 Project_Overview/  The week-by-week build specification
 ```
 
+Alongside the specification,
+[`Project_Overview/Competitive_Landscape.md`](./Project_Overview/Competitive_Landscape.md)
+surveys the products this one competes with and recommends what to build next.
+
 ## Scripts
 
 Run these from the repository root.
