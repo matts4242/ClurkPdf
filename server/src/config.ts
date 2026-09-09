@@ -50,6 +50,15 @@ export const config = {
   /** How long browsers may cache rendered page images. */
   imageCacheSeconds: int(process.env.IMAGE_CACHE_SECONDS, 60 * 60 * 24),
 
+  /** Redis connection string, used by the batch queue. */
+  redisUrl: process.env.REDIS_URL ?? 'redis://127.0.0.1:6379',
+
+  /** How many documents in a batch are processed at once. */
+  batchConcurrency: int(process.env.BATCH_CONCURRENCY, 2),
+
+  /** Most files accepted in one batch upload. */
+  maxBatchFiles: int(process.env.MAX_BATCH_FILES, 50),
+
   /** Tesseract language, e.g. `eng` or `eng+deu`. */
   ocrLanguage: process.env.OCR_LANGUAGE ?? 'eng',
 

@@ -30,7 +30,7 @@ export const thumbnailPath = (id: string): string =>
 export const thumbnailUrl = (id: string): string => `/uploads/${id}/thumbnail.png`;
 
 /** Shape Prisma rows into the API's Document type. */
-type DocumentRow = {
+export type DocumentRow = {
   id: string;
   filename: string;
   originalName: string;
@@ -41,10 +41,11 @@ type DocumentRow = {
   status: string;
   thumbnailUrl: string | null;
   errorMessage: string | null;
+  batchId: string | null;
   createdAt: Date;
 };
 
-function toDocument(row: DocumentRow): Document {
+export function toDocument(row: DocumentRow): Document {
   return {
     id: row.id,
     filename: row.filename,
@@ -57,6 +58,7 @@ function toDocument(row: DocumentRow): Document {
     status: row.status as DocumentStatus,
     ...(row.thumbnailUrl === null ? {} : { thumbnailUrl: row.thumbnailUrl }),
     ...(row.errorMessage === null ? {} : { errorMessage: row.errorMessage }),
+    ...(row.batchId === null ? {} : { batchId: row.batchId }),
   };
 }
 
@@ -65,10 +67,14 @@ function toDocument(row: DocumentRow): Document {
  *
  * Called once at startup. Nothing is going to finish rendering them, so
  * leaving them at `processing` would make clients poll forever.
+ *
+ * Batch documents are left alone: their job outlives the process in Redis, and
+ * the queue hands a stalled one to the next worker that comes up. Failing them
+ * here would only contradict the retry that is already coming.
  */
 export async function failInterruptedProcessing(): Promise<number> {
   const { count } = await getPrisma().document.updateMany({
-    where: { status: 'processing' },
+    where: { status: 'processing', batchId: null },
     data: { status: 'error', errorMessage: 'Processing was interrupted by a server restart' },
   });
   return count;
@@ -87,6 +93,7 @@ export async function create(document: Document): Promise<Document> {
       status: document.status,
       thumbnailUrl: document.thumbnailUrl ?? null,
       errorMessage: document.errorMessage ?? null,
+      batchId: document.batchId ?? null,
     },
   });
   return toDocument(row);

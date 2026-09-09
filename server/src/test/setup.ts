@@ -44,8 +44,9 @@ if (!databaseName.endsWith('_test')) {
 const { getPrisma, disconnectDatabase } = await import('../db/client.js');
 
 beforeEach(async () => {
-  // Regions cascade from documents, so one truncate clears both tables.
-  await getPrisma().$executeRawUnsafe('TRUNCATE "Document" CASCADE');
+  // Regions cascade from documents and documents from batches, so naming the
+  // two roots clears all three tables.
+  await getPrisma().$executeRawUnsafe('TRUNCATE "Batch", "Document" CASCADE');
 });
 
 afterAll(async () => {

@@ -4,6 +4,7 @@ import helmet from 'helmet';
 import morgan from 'morgan';
 import { config } from './config.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
+import { batchesRouter } from './routes/batches.js';
 import { documentsRouter } from './routes/documents.js';
 import { forbidden } from './utils/errors.js';
 
@@ -68,6 +69,7 @@ export function createApp(): Express {
   );
 
   app.use('/api/documents', documentsRouter);
+  app.use('/api/batches', batchesRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { FileStack, Trash2 } from 'lucide-react';
+import { ArrowLeft, FileStack, Layers, Trash2 } from 'lucide-react';
+import { BatchUpload } from './components/BatchUpload';
 import { DocumentViewer } from './components/DocumentViewer';
 import { FileDropzone } from './components/FileDropzone';
 import { UploadProgress, type UploadProgressStatus } from './components/UploadProgress';
@@ -19,10 +20,16 @@ interface QueueItem {
 
 const MAX_RETRIES = 3;
 
+/** The two ways in: one document at a time, or a whole batch. */
+type View = 'documents' | 'batches';
+
 export default function App() {
   const [documents, setDocuments] = useState<Document[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [queue, setQueue] = useState<QueueItem[]>([]);
+  const [view, setView] = useState<View>('documents');
+  /** Set while looking at one document out of a batch. */
+  const [batchDocumentId, setBatchDocumentId] = useState<string | null>(null);
 
   const { upload, progress, status, cancel } = useDocumentUpload();
   const pendingRef = useRef<File[]>([]);
@@ -159,13 +166,59 @@ export default function App() {
         <FileStack className="h-5 w-5 text-sky-600" aria-hidden="true" />
         <h1 className="text-sm font-semibold text-slate-800">Invoice Processor</h1>
         <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-500">
-          Week 4 &middot; Text layer
+          Week 5 &middot; Batches
         </span>
+
+        <nav className="ml-4 flex gap-1" aria-label="Views">
+          {(
+            [
+              ['documents', 'Documents', FileStack],
+              ['batches', 'Batches', Layers],
+            ] as const
+          ).map(([id, label, Icon]) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setView(id)}
+              aria-current={view === id}
+              className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
+                view === id
+                  ? 'bg-sky-50 text-sky-700'
+                  : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700'
+              }`}
+            >
+              <Icon className="h-3.5 w-3.5" aria-hidden="true" />
+              {label}
+            </button>
+          ))}
+        </nav>
+
         <span className="ml-auto text-xs text-slate-400">
           {documents.length} {documents.length === 1 ? 'document' : 'documents'}
         </span>
       </header>
 
+      {view === 'batches' ? (
+        <main className="flex min-h-0 flex-1 flex-col gap-3 p-4">
+          {batchDocumentId === null ? (
+            <BatchUpload onOpenDocument={setBatchDocumentId} />
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={() => setBatchDocumentId(null)}
+                className="flex w-fit items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50"
+              >
+                <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
+                Back to the batch
+              </button>
+              <div className="min-h-0 min-w-0 flex-1">
+                <DocumentViewer key={batchDocumentId} documentId={batchDocumentId} />
+              </div>
+            </>
+          )}
+        </main>
+      ) : (
       <main className="grid min-h-0 flex-1 gap-4 p-4 lg:grid-cols-[22rem_1fr]">
         <div className="flex min-h-0 min-w-0 flex-col gap-4 overflow-y-auto">
           <FileDropzone onFilesSelected={handleFilesSelected} disabled={status === 'uploading'} />
@@ -241,6 +294,7 @@ export default function App() {
           )}
         </div>
       </main>
+      )}
     </div>
   );
 }

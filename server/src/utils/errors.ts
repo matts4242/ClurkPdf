@@ -82,3 +82,9 @@ export const invalidPage = (pageNumber: number, pageCount: number): AppError =>
 
 export const invalidFieldType = (received: unknown): AppError =>
   new AppError('INVALID_FIELD_TYPE', 'Unknown field type', 400, { received });
+
+export const batchNotFound = (id: string): AppError =>
+  new AppError('BATCH_NOT_FOUND', `Batch ${id} not found`, 404, { id });
+
+export const tooManyFiles = (max: number): AppError =>
+  new AppError('TOO_MANY_FILES', `A batch takes at most ${max} files`, 400, { max });

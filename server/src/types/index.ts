@@ -37,11 +37,19 @@ export const ERROR_CODES = [
   'INVALID_DIMENSIONS',
   'INVALID_PAGE',
   'INVALID_FIELD_TYPE',
+  // Week 5: batches
+  'BATCH_NOT_FOUND',
+  'TOO_MANY_FILES',
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
-export type DocumentStatus = 'uploaded' | 'processing' | 'ready' | 'error';
+/**
+ * `queued` means the document is waiting for a worker; a document uploaded on
+ * its own goes straight to `processing`, since nothing stands between it and
+ * the render.
+ */
+export type DocumentStatus = 'queued' | 'processing' | 'ready' | 'error';
 
 export interface Document {
   /** UUID v4. */
@@ -63,6 +71,8 @@ export interface Document {
   thumbnailUrl?: string;
   /** Populated when `status` is `error`. */
   errorMessage?: string;
+  /** Set when the document was uploaded as part of a batch. */
+  batchId?: string;
 }
 
 /** A document plus a summary of the regions drawn on it. */
@@ -214,3 +224,43 @@ export interface ListRegionsResponse {
   regions: Region[];
   total: number;
 }
+
+// --- Week 5: batches -----------------------------------------------------
+
+/** A set of documents uploaded together. */
+export interface Batch {
+  id: string;
+  name?: string;
+  createdAt: string;
+  documents: Document[];
+  counts: BatchCounts;
+}
+
+/** How many documents in a batch are in each state. */
+export interface BatchCounts {
+  total: number;
+  queued: number;
+  processing: number;
+  ready: number;
+  error: number;
+}
+
+/** A batch without its documents, for the list view. */
+export interface BatchSummary {
+  id: string;
+  name?: string;
+  createdAt: string;
+  counts: BatchCounts;
+  /** Thumbnails of the first few documents, for the list. */
+  thumbnailUrls: string[];
+}
+
+/**
+ * What the server pushes over the WebSocket while a batch runs.
+ *
+ * `document` carries the whole document rather than a delta: it is small, and
+ * a client that missed an earlier message still ends up in the right state.
+ */
+export type BatchEvent =
+  | { type: 'document'; batchId: string; document: Document }
+  | { type: 'batch-complete'; batchId: string; counts: BatchCounts };

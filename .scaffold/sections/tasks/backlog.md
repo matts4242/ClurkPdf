@@ -102,13 +102,45 @@ layer and swallowed the caret, and the first overlap rule required half a text
 run to be inside the rectangle — which no ordinary selection satisfies, because
 pdf.js emits a whole line as one run.
 
-## Weeks 5-7
+## Week 5 — Batch queueing
 
-Not started. One line of intent each in `Project_Overview/Week 5.1` through
-`Week 7.1`: batch queueing, templates, export.
+Acceptance criteria from Prompt 7 of the project overview.
 
-Week 5 needs Redis and Bull, and replaces the serial upload loop in `App.tsx`
-with a real queue plus WebSocket progress. Week 7's export is the first point
-where the two capture modes have to produce one flat row per document; because
-both already write to `Region`, that should be a single query rather than a
-merge.
+- [x] A document processing queue, BullMQ on Redis
+- [x] `POST /api/batches` adds one `extract-invoice` job per uploaded file
+- [x] The processor converts every page to an image
+- [x] The processor runs auto-detection for the common fields
+- [x] Detected regions are saved to the database
+- [x] A WebSocket event is emitted as each document settles, and again when the
+      batch is done
+- [x] `BatchUpload` with multi-file drag-drop, queue status, a thumbnail grid
+      with status badges, and a click-through to `DocumentViewer`
+
+Also delivered:
+
+- [x] A `Batch` model whose counts are derived from its documents, so there is
+      no second source of truth to keep in step
+- [x] A rejected file is reported on its own rather than failing the batch
+- [x] Per-document retry, and a document is only marked failed on the last
+      attempt
+- [x] Batch documents are left alone at startup recovery, because their jobs
+      outlive the process in Redis
+- [x] The client falls back to polling when the socket is unavailable, so a
+      proxy that drops upgrades costs immediacy rather than correctness
+- [x] 12 batch and detection tests against a real queue, worker and socket;
+      107 across the project
+- [x] Redis added to the dev compose file, the production stack and CI
+
+A defect found while testing this slice: switching batches blanked the grid for
+a round trip and showed the "drop a folder" empty state while the new batch
+loaded. The upload response now seeds the view, and a genuine load shows a
+spinner.
+
+## Weeks 6-7
+
+Not started. One line of intent each in `Project_Overview/Week 6.1` and
+`Week 7.1`: templates, export.
+
+Week 7's export is the first point where the two capture modes have to produce
+one flat row per document; because both already write to `Region`, that should
+be a single query rather than a merge.

@@ -17,7 +17,8 @@ export interface ApiError {
   details?: unknown;
 }
 
-export type DocumentStatus = 'uploaded' | 'processing' | 'ready' | 'error';
+/** `queued` only happens in a batch; a lone upload starts at `processing`. */
+export type DocumentStatus = 'queued' | 'processing' | 'ready' | 'error';
 
 export interface Document {
   id: string;
@@ -31,6 +32,8 @@ export interface Document {
   status: DocumentStatus;
   thumbnailUrl?: string;
   errorMessage?: string;
+  /** Set when the document was uploaded as part of a batch. */
+  batchId?: string;
 }
 
 export type UploadStatus = 'idle' | 'uploading' | 'processing' | 'success' | 'error';
@@ -184,3 +187,57 @@ export const regionLabel = (region: Region): string =>
   region.fieldType === 'CUSTOM' && region.fieldLabel
     ? region.fieldLabel
     : FIELD_TYPE_META[region.fieldType].label;
+
+// --- Week 5: batches -----------------------------------------------------
+
+export interface BatchCounts {
+  total: number;
+  queued: number;
+  processing: number;
+  ready: number;
+  error: number;
+}
+
+/** A set of documents uploaded together, with its documents. */
+export interface Batch {
+  id: string;
+  name?: string;
+  createdAt: string;
+  documents: Document[];
+  counts: BatchCounts;
+}
+
+/** A batch without its documents, for the list. */
+export interface BatchSummary {
+  id: string;
+  name?: string;
+  createdAt: string;
+  counts: BatchCounts;
+  thumbnailUrls: string[];
+}
+
+/** A file the server refused, reported alongside the batch it was meant for. */
+export interface RejectedFile {
+  filename: string;
+  reason: string;
+}
+
+export interface CreateBatchResponse {
+  batch: Batch;
+  rejected: RejectedFile[];
+}
+
+/** What the server pushes over the WebSocket while a batch runs. */
+export type BatchEvent =
+  | { type: 'document'; batchId: string; document: Document }
+  | { type: 'batch-complete'; batchId: string; counts: BatchCounts };
+
+export const DOCUMENT_STATUS_META: Record<
+  DocumentStatus,
+  { label: string; badge: string }
+> = {
+  queued: { label: 'Queued', badge: 'bg-slate-100 text-slate-600' },
+  processing: { label: 'Processing', badge: 'bg-amber-100 text-amber-700' },
+  ready: { label: 'Ready', badge: 'bg-emerald-100 text-emerald-700' },
+  error: { label: 'Failed', badge: 'bg-rose-100 text-rose-700' },
+};

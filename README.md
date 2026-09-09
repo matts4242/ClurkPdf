@@ -4,16 +4,19 @@ A browser-based tool for digitising paper and PDF invoices. Accounting teams
 upload a batch, mark up the fields they care about, and export structured data.
 
 The build follows the seven-week plan in [`Project_Overview/`](./Project_Overview),
-one vertical slice at a time. **Weeks 1 to 4 are implemented: upload a PDF,
-view it rendered in the browser, mark up the fields you care about — either by
-drawing regions and running OCR, or by highlighting the document's own text —
-and edit the results.** Weeks 5 to 7 add batch queueing, templates, and export.
+one vertical slice at a time. **Weeks 1 to 5 are implemented: upload a PDF or a
+whole folder of them, view them rendered in the browser, mark up the fields you
+care about — either by drawing regions and running OCR, or by highlighting the
+document's own text — and edit the results. A batch is processed in the
+background, with the usual invoice fields marked out automatically.** Weeks 6
+and 7 add templates and export.
 
 ## Requirements
 
 - Node.js 22.13 or newer (developed on 22.22; CI covers 22.x and 24.x)
 - npm 10 or newer
-- PostgreSQL 14 or newer — `docker compose up -d` provides one
+- PostgreSQL 14 or newer, and Redis 6 or newer for the batch queue —
+  `docker compose up -d` provides both
 
 The Node floor comes from `pdfjs-dist`, which requires 22.13. Node 20 cannot
 run this project. PDF rendering needs no system packages; it runs entirely on
@@ -22,7 +25,7 @@ prebuilt npm packages.
 ## Setup
 
 ```bash
-docker compose up -d          # PostgreSQL on :5432, dev and test databases
+docker compose up -d          # PostgreSQL on :5432 and Redis on :6379
 cp server/.env.example server/.env
 npm install                   # root, server, and client dependencies
 npm run db:migrate            # create the schema
@@ -38,6 +41,7 @@ Server      http://localhost:3001
 Client      http://localhost:5173
 Uploads     <repo>/server/uploads
 Database    postgresql://invoice:***@127.0.0.1:5432/invoice_processor
+Queue       redis://127.0.0.1:6379 (2 at a time)
 ```
 
 Already have PostgreSQL? Skip `docker compose` and point `DATABASE_URL` and
@@ -55,9 +59,9 @@ git clone https://github.com/matts4242/ClurkPdf.git && cd ClurkPdf
 ./scripts/deploy.sh invoices.example.com   # https, certificate from Caddy
 ```
 
-That builds three containers — Caddy serving the client and proxying the API,
-the Node server, and PostgreSQL — applies the migrations, and waits for the API
-to report healthy. [`DEPLOY.md`](./DEPLOY.md) covers sizing, firewalls,
+That builds four containers — Caddy serving the client and proxying the API,
+the Node server, PostgreSQL and Redis — applies the migrations, and waits for
+the API to report healthy. [`DEPLOY.md`](./DEPLOY.md) covers sizing, firewalls,
 updates, backups and the settings in `deploy/env.example`.
 
 ## Layout
@@ -102,6 +106,10 @@ them; every value there is already the built-in default.
 | `DATABASE_URL` | none, **required** | PostgreSQL connection string |
 | `TEST_DATABASE_URL` | see `.env.example` | Database used by `npm test`; name must end in `_test` |
 | `DATABASE_POOL_SIZE` | `10` | Maximum database connections |
+| `REDIS_URL` | `redis://127.0.0.1:6379` | Redis the batch queue runs on |
+| `TEST_REDIS_URL` | database 1 on the above | Queue used by `npm test` |
+| `BATCH_CONCURRENCY` | `2` | Documents processed at once |
+| `MAX_BATCH_FILES` | `50` | Most files in one batch upload |
 | `PORT` | `3001` | API port |
 | `UPLOADS_DIR` | `uploads` | Uploads root, relative to `server/` |
 | `MAX_FILE_SIZE` | `10485760` | Largest accepted upload, in bytes |
@@ -141,6 +149,10 @@ Every endpoint answers with the same envelope, success or failure.
 | `DELETE` | `/api/documents/:id/regions/:regionId` | Delete a region |
 | `POST` | `/api/documents/:id/ocr` | Read the text inside the document's regions |
 | `GET` | `/api/documents/:id/text-layer/:n` | The page's own text, with positions |
+| `POST` | `/api/batches` | Upload many PDFs as `multipart/form-data` under the field `files` |
+| `GET` | `/api/batches` | List batches, newest first, with their counts |
+| `GET` | `/api/batches/:id` | One batch and its documents |
+| `WS` | `/api/ws` | Live batch progress |
 | `GET` | `/api/health` | Liveness check |
 
 `GET /api/documents/:id` also returns `regionCount` and `pagesWithRegions`.
@@ -150,7 +162,36 @@ Error codes: `FILE_TOO_LARGE` (413), `INVALID_FILE_TYPE` (415),
 `DOCUMENT_NOT_FOUND` (404), `PAGE_NOT_FOUND` (404), `FORBIDDEN` (403),
 `PROCESSING_ERROR` (500), `INTERNAL_ERROR` (500), `REGION_NOT_FOUND` (404),
 `REGION_OUT_OF_BOUNDS` (400), `INVALID_DIMENSIONS` (400), `INVALID_PAGE` (400),
-`INVALID_FIELD_TYPE` (400).
+`INVALID_FIELD_TYPE` (400), `BATCH_NOT_FOUND` (404), `TOO_MANY_FILES` (400).
+
+### Batches
+
+`POST /api/batches` takes many PDFs at once under the field `files`, with an
+optional `name`. It stores them and answers immediately with every document in
+`queued`; the work happens in a Redis-backed queue. A file that is not a
+readable PDF comes back under `rejected` and the rest of the batch still runs.
+
+```jsonc
+{ "batch": { "id": "…", "documents": [ ], "counts": { "total": 3, "queued": 3 } },
+  "rejected": [ { "filename": "notes.pdf", "reason": "…" } ] }
+```
+
+Each queued document is rendered page by page, given a thumbnail, and scanned
+for the usual invoice fields. A detected field becomes an ordinary region with
+`textSource: TEXT_LAYER`, read from the PDF's own text by the same code a
+hand-drawn highlight uses — so a batch arrives already marked up, and anything
+the guess got wrong is corrected exactly as any other region is.
+
+Progress is pushed over a WebSocket at `/api/ws`. Send
+`{"subscribe": "<batchId>"}` after connecting, then expect:
+
+```jsonc
+{ "type": "document", "batchId": "…", "document": { } }   // each time one moves
+{ "type": "batch-complete", "batchId": "…", "counts": { } }
+```
+
+The client polls the batch as well, every few seconds while work is
+outstanding, so a dropped socket costs immediacy rather than correctness.
 
 ### OCR
 
@@ -241,22 +282,33 @@ A PDF that will not parse is rejected synchronously with `INVALID_PDF` and
 nothing is written to disk. A PDF that parses but fails to render leaves the
 document at `status: "error"` with a message, since the upload itself succeeded.
 
+A batch is the same lifecycle with a queue in the middle: its documents start
+at `queued` and a worker moves each to `processing` and then `ready`, rendering
+every page rather than only the first.
+
 ## Testing
 
 ```bash
-npm test               # 95 tests
+npm test               # 107 tests
 ```
 
-- **Server (80)** — HTTP endpoints, PDF rendering, region validation and
-  ownership, OCR, text-layer extraction and snapping, cascade deletes, and
-  path-traversal defences. Each test runs against a real server on an ephemeral
-  port and a real database.
+- **Server (92)** — HTTP endpoints, PDF rendering, region validation and
+  ownership, OCR, text-layer extraction and snapping, batch queueing and field
+  detection, cascade deletes, and path-traversal defences. Each test runs
+  against a real server on an ephemeral port, a real database, and a real
+  queue.
 - **Client (15)** — the coordinate maths, including that a region covers the
   same content at every zoom level.
 
 The OCR tests run Tesseract for real against a generated invoice whose text the
 fixture chooses, so recognition is measured rather than stubbed. The first run
 downloads the language data; CI caches it.
+
+The batch tests run the real queue, the real worker and the real WebSocket: a
+batch tested with the queue stubbed out would prove almost nothing, since the
+whole point of the slice is what happens between the upload answering and the
+documents being ready. They use Redis database 1, so a development server on
+database 0 cannot pick up jobs the tests enqueued.
 
 The server suite starts from an empty schema: migrations are applied once, then
 every test truncates. Two guards keep that away from real data. `DATABASE_URL`
@@ -270,6 +322,27 @@ Test PDFs are generated byte-by-byte in `server/src/test/fixtures.ts`, so no
 binary fixtures are stored in the repository.
 
 ## Notes on the specification
+
+### Week 5
+
+- **Auto-detection creates ordinary regions.** A detected field goes through the
+  same `TEXT_LAYER` path a hand-drawn highlight uses, so its text is read from
+  the rectangle by one piece of code and there is no second notion of "detected
+  text" for the sidebar, corrections or export to learn about.
+- **A batch has no status of its own.** Its counts are derived from its
+  documents on every read, which is one query and cannot fall out of step with
+  them.
+- **The worker runs inside the API process.** The work is the same PDF
+  rendering the API already does, and a second container would double the
+  memory for no gain at this size. The queue is Redis-backed, so splitting it
+  out later is a deployment change rather than a rewrite.
+- **A plain WebSocket, not socket.io.** The page needs server-to-client
+  progress and nothing else; `ws` on the server and the browser's own
+  `WebSocket` cost one small dependency and no client one, against socket.io's
+  rooms, fallbacks and protocol.
+- **Detection is a first guess, not an answer.** It reads the PDF's own text, so
+  a scanned page gets nothing and is left for OCR, and a wrong guess is
+  corrected exactly as any other region is.
 
 ### Week 4
 

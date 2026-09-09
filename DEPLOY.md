@@ -1,22 +1,24 @@
 # Deploying to a VPS
 
-The whole application runs as three containers, started by one command:
+The whole application runs as four containers, started by one command:
 
 | Container | What it is |
 | --- | --- |
 | `web` | Caddy. Serves the built client and proxies `/api` and `/uploads` to the server. Gets an HTTPS certificate on its own if you give it a domain. |
-| `server` | The Express API, with pdf.js and Tesseract. Applies database migrations on start. |
+| `server` | The Express API, with pdf.js and Tesseract. Runs the batch worker, and applies database migrations on start. |
 | `db` | PostgreSQL 16. Not published to the internet — only `server` can reach it. |
+| `redis` | The batch queue. Append-only, so a queued document survives a restart. |
 
 Written for a Hostinger VPS running Ubuntu 24.04, but nothing here is
 Hostinger-specific; any Linux host with Docker will do.
 
 ## Sizing
 
-OCR is the demanding part: each Tesseract worker is a WASM instance holding a
-page image. **KVM 2 (2 vCPU, 8GB) is a comfortable starting point.** KVM 1 (1
-vCPU, 4GB) works for one user at a time — leave `OCR_CONCURRENCY=2` alone, or
-lower it to `1`.
+OCR and batch processing are the demanding parts: a Tesseract worker is a WASM
+instance holding a page image, and a batch worker renders every page of a
+document. **KVM 2 (2 vCPU, 8GB) is a comfortable starting point.** KVM 1 (1
+vCPU, 4GB) works for one user at a time — leave `OCR_CONCURRENCY` and
+`BATCH_CONCURRENCY` at `2`, or lower them to `1`.
 
 ## First deploy
 
@@ -113,6 +115,8 @@ generates a new password that the existing volume will reject.
 | `PAGE_DPI` | `150` | Render resolution; both containers are built against it |
 | `OCR_LANGUAGE` | `eng` | e.g. `eng+deu` |
 | `OCR_CONCURRENCY` | `2` | Regions recognised at once |
+| `BATCH_CONCURRENCY` | `2` | Documents processed at once |
+| `MAX_BATCH_FILES` | `50` | Most files in one batch upload |
 
 ## Backups
 
@@ -128,6 +132,9 @@ docker compose -f docker-compose.prod.yml exec -T db \
 docker run --rm -v clurkpdf_uploads:/data -v "$PWD":/backup alpine \
   tar czf /backup/uploads-$(date +%F).tar.gz -C /data .
 ```
+
+The Redis volume holds only work in progress, so it is not worth backing up:
+a document whose job is lost stays `queued`, and re-uploading it is the fix.
 
 Restoring the database into a running stack:
 
@@ -162,6 +169,16 @@ echo '/swapfile none swap sw 0 0' >> /etc/fstab
 **The API never reports healthy** — `docker compose -f docker-compose.prod.yml
 logs server`. The usual cause is a migration failing against an older database
 volume; the message names the migration.
+
+**A batch sits at `queued`** — the worker runs inside the API container, so
+check that it is up and that Redis is healthy (`docker compose -f
+docker-compose.prod.yml ps`). `logs server` shows a line per failed job.
+
+**The batch view says "Reconnecting…"** — the WebSocket at `/api/ws` is not
+getting through. Caddy upgrades it without configuration, so this points at
+something in front of it: a CDN or company proxy that drops upgrades. The view
+falls back to polling every few seconds, so it stays correct, just less
+immediate.
 
 **Uploads fail at the size limit** — `MAX_FILE_SIZE` is enforced by the server,
 and Caddy passes bodies through without a limit of its own. Raise the variable

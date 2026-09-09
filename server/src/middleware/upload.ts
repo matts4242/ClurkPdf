@@ -26,3 +26,26 @@ export const uploadSingleDocument = multer({
     callback(null, true);
   },
 }).single('file');
+
+/**
+ * Multer for a batch: many PDFs in one request.
+ *
+ * The per-file ceiling is the same as a single upload; `files` caps how many
+ * arrive at once so a request cannot buffer an unbounded amount of memory.
+ */
+export const uploadBatchDocuments = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: config.maxFileSize,
+    files: config.maxBatchFiles,
+    fieldNameSize: 100,
+    fieldSize: 1024,
+  },
+  fileFilter: (_req, file, callback) => {
+    if (!(ACCEPTED_MIME_TYPES as readonly string[]).includes(file.mimetype)) {
+      callback(invalidFileType(file.mimetype));
+      return;
+    }
+    callback(null, true);
+  },
+}).array('files', config.maxBatchFiles);

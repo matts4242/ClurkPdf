@@ -1,4 +1,4 @@
-# Production stack: Postgres, the API server, and Caddy in front of both.
+# Production stack: Postgres, Redis, the API server, and Caddy in front.
 #
 #   ./scripts/deploy.sh            build and start everything
 #   docker compose -f docker-compose.prod.yml logs -f
@@ -26,6 +26,21 @@ services:
       retries: 10
       start_period: 20s
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Append-only so a queued document survives a restart of this container.
+    # Losing the queue would strand documents at `queued` with no worker
+    # coming for them.
+    command: ['redis-server', '--appendonly', 'yes']
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   server:
     build:
       context: .
@@ -34,10 +49,15 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       NODE_ENV: production
       PORT: 3001
       DATABASE_URL: postgresql://invoice:${POSTGRES_PASSWORD}@db:5432/invoice_processor?schema=public
+      REDIS_URL: redis://redis:6379
+      BATCH_CONCURRENCY: ${BATCH_CONCURRENCY:-2}
+      MAX_BATCH_FILES: ${MAX_BATCH_FILES:-50}
       # Caddy puts the API on the same origin as the page, so CORS never comes
       # into play in this stack. The value is kept honest anyway.
       CLIENT_ORIGIN: ${PUBLIC_URL:-http://localhost}
@@ -89,6 +109,7 @@ services:
 
 volumes:
   db_data:
+  redis_data:
   uploads:
   tesseract:
   caddy_data:

@@ -19,6 +19,21 @@ datasource db {
   provider = "postgresql"
 }
 
+/// A set of documents uploaded together and processed as one unit.
+///
+/// A batch has no status column of its own: it is exactly the state of its
+/// documents, and storing a summary beside them would be a second source of
+/// truth to keep in step.
+model Batch {
+  id        String     @id @default(uuid()) @db.Uuid
+  name      String?
+  createdAt DateTime   @default(now())
+
+  documents Document[]
+
+  @@index([createdAt])
+}
+
 model Document {
   id           String         @id @default(uuid()) @db.Uuid
   filename     String
@@ -27,17 +42,21 @@ model Document {
   size         Int
   pageCount    Int
   uploadPath   String
-  /// uploaded | processing | ready | error
+  /// queued | processing | ready | error
   status       String
   thumbnailUrl String?
   errorMessage String?
+  /// Null for a document uploaded on its own rather than as part of a batch.
+  batchId      String?        @db.Uuid
   createdAt    DateTime       @default(now())
   updatedAt    DateTime       @updatedAt
 
   regions      Region[]
+  batch        Batch?         @relation(fields: [batchId], references: [id], onDelete: Cascade)
 
   @@index([status])
   @@index([createdAt])
+  @@index([batchId])
 }
 
 model Region {

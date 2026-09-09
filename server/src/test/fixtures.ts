@@ -62,7 +62,7 @@ type TextRun = [x: number, y: number, size: number, text: string];
  * space, where y counts up from the bottom of a 612x792 page.
  */
 export function buildInvoicePdf(): Buffer {
-  const runs: TextRun[] = [
+  return buildPositionedPdf([
     [72, 720, 22, 'ACME Supply Co'],
     [72, 690, 12, '119 Harbour Road, Bristol'],
     [400, 720, 14, 'INVOICE'],
@@ -74,8 +74,11 @@ export function buildInvoicePdf(): Buffer {
     [400, 480, 12, 'Subtotal: 4200.00'],
     [400, 460, 12, 'Tax: 840.00'],
     [400, 435, 14, 'Total: 5040.00'],
-  ];
+  ]);
+}
 
+/** Write a one-page PDF with the given text runs, in PDF user space. */
+function buildPositionedPdf(runs: TextRun[]): Buffer {
   const stream = runs
     .map(
       ([x, y, size, text]) =>
@@ -108,4 +111,26 @@ export function buildInvoicePdf(): Buffer {
   out += `trailer\n<< /Size ${total + 1} /Root 1 0 R >>\nstartxref\n${startxref}\n%%EOF\n`;
 
   return Buffer.from(out, 'latin1');
+}
+
+/**
+ * An invoice whose labels and values are separate text runs, with a due date.
+ *
+ * The main fixture writes "Invoice No: INV-2026-0042" as one run, which is the
+ * common case. This one splits them, and adds the date pair that field
+ * detection has to tell apart, so both paths are covered by a real PDF rather
+ * than by a hand-built text layer.
+ */
+export function buildSplitLabelInvoicePdf(): Buffer {
+  return buildPositionedPdf([
+    [72, 720, 20, 'Northwind Trading'],
+    [400, 700, 12, 'Invoice Number'],
+    [500, 700, 12, 'NW-7781'],
+    [400, 680, 12, 'Date'],
+    [500, 680, 12, '02 April 2026'],
+    [400, 660, 12, 'Due Date'],
+    [500, 660, 12, '02 May 2026'],
+    [400, 500, 12, 'Total'],
+    [500, 500, 12, '1290.50'],
+  ]);
 }

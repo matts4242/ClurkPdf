@@ -2,6 +2,9 @@ import axios, { AxiosError, type AxiosInstance, type GenericAbortSignal } from '
 import type {
   ApiError,
   ApiResponse,
+  Batch,
+  BatchSummary,
+  CreateBatchResponse,
   CreateRegionInput,
   Document,
   DocumentWithStats,
@@ -207,3 +210,51 @@ export const pageImageUrl = (id: string, pageNumber: number): string =>
 
 /** Absolute URL for a path the server returned, such as `thumbnailUrl`. */
 export const absoluteUrl = (relativePath: string): string => `${SERVER_ORIGIN}${relativePath}`;
+
+// ---------------------------------------------------------------------------
+// Batches
+// ---------------------------------------------------------------------------
+
+export function createBatch(
+  files: File[],
+  options: UploadOptions & { name?: string } = {},
+): Promise<CreateBatchResponse> {
+  const form = new FormData();
+  for (const file of files) form.append('files', file);
+  if (options.name !== undefined) form.append('name', options.name);
+
+  return unwrap<CreateBatchResponse>(
+    http.post('/batches', form, {
+      ...(options.signal ? { signal: options.signal } : {}),
+      // Fifty files is a slow upload on a domestic connection.
+      timeout: 300_000,
+      onUploadProgress: (event) => {
+        if (!options.onProgress) return;
+        const total = event.total ?? 0;
+        if (total > 0) {
+          options.onProgress(Math.min(100, Math.round((event.loaded / total) * 100)));
+        }
+      },
+    }),
+  );
+}
+
+export function listBatches(signal?: GenericAbortSignal): Promise<BatchSummary[]> {
+  return unwrap<BatchSummary[]>(http.get('/batches', signal ? { signal } : {}));
+}
+
+export function fetchBatch(id: string, signal?: GenericAbortSignal): Promise<Batch> {
+  return unwrap<Batch>(http.get(`/batches/${id}`, signal ? { signal } : {}));
+}
+
+/**
+ * Address of the batch progress socket.
+ *
+ * `SERVER_ORIGIN` is empty in a deployed build, where the page and the API
+ * share an origin, so the socket is built from the page's own location in that
+ * case — which also keeps it on wss:// when the page is served over HTTPS.
+ */
+export function batchSocketUrl(): string {
+  const base = SERVER_ORIGIN === '' ? window.location.origin : SERVER_ORIGIN;
+  return `${base.replace(/^http/, 'ws')}/api/ws`;
+}

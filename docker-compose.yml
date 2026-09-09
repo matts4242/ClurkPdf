@@ -1,10 +1,11 @@
-# Local PostgreSQL for development and tests.
+# Local PostgreSQL and Redis for development and tests.
 #
 #   docker compose up -d
 #
-# Creates the development database. The test database is created alongside it
-# by the init script below, because the test suite refuses to run against any
-# database whose name does not end in `_test`.
+# Creates the development database and the Redis the batch queue runs on. The
+# test database is created alongside the first by the init script below,
+# because the test suite refuses to run against any database whose name does
+# not end in `_test`; the test queue is Redis database 1 for the same reason.
 
 services:
   postgres:
@@ -22,6 +23,20 @@ services:
       - ./scripts/init-test-db.sql:/docker-entrypoint-initdb.d/init-test-db.sql:ro
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U invoice -d invoice_processor']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Backs the batch queue. Nothing here needs to outlive `docker compose down`
+  # in development, so it gets no volume.
+  redis:
+    image: redis:7-alpine
+    container_name: invoice-processor-redis
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
       interval: 10s
       timeout: 5s
       retries: 5

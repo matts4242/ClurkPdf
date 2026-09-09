@@ -1,24 +1,31 @@
 import { createApp } from './app.js';
 import { config } from './config.js';
 import { connectDatabase, disconnectDatabase } from './db/client.js';
+import { closeQueue } from './queue/documentQueue.js';
+import { connectRedis, disconnectRedis } from './queue/connection.js';
+import { startWorker, stopWorker } from './queue/worker.js';
 import { terminateOcr } from './services/ocrService.js';
 import { count, failInterruptedProcessing } from './services/documentStore.js';
 import { ensureUploadsDirectory } from './services/pdfService.js';
+import { attachBatchEvents, closeBatchEvents } from './ws/batchEvents.js';
 
 async function main(): Promise<void> {
   await ensureUploadsDirectory();
 
   await connectDatabase();
+  await connectRedis();
   const stranded = await failInterruptedProcessing();
   const documents = await count();
 
-  const server = createApp().listen(config.port, () => {
+  const app = createApp();
+  const server = app.listen(config.port, () => {
     console.log('');
     console.log('  Invoice Processor API');
     console.log(`  Server      http://localhost:${config.port}`);
     console.log(`  Client      ${config.allowedOrigins.join(', ')}`);
     console.log(`  Uploads     ${config.uploadsDir}`);
     console.log(`  Database    ${redactUrl(config.databaseUrl)}`);
+    console.log(`  Queue       ${redactUrl(config.redisUrl)} (${config.batchConcurrency} at a time)`);
     console.log(`  Max upload  ${Math.round(config.maxFileSize / (1024 * 1024))}MB`);
     console.log(`  Documents   ${documents} stored`);
     if (stranded > 0) {
@@ -27,6 +34,9 @@ async function main(): Promise<void> {
     console.log('');
   });
 
+  attachBatchEvents(server);
+  startWorker();
+
   let shuttingDown = false;
   const shutdown = (signal: string): void => {
     if (shuttingDown) return;
@@ -34,8 +44,15 @@ async function main(): Promise<void> {
     console.log(`\n${signal} received, closing server...`);
 
     server.close(async (error) => {
+      // Let a job in flight finish rather than leaving a document stuck at
+      // `processing`; the queue survives the restart, an interrupted job does
+      // not.
+      await stopWorker().catch(() => undefined);
+      await closeQueue().catch(() => undefined);
+      await closeBatchEvents().catch(() => undefined);
       // Tesseract workers hold WASM instances that keep the process alive.
       await terminateOcr().catch(() => undefined);
+      await disconnectRedis().catch(() => undefined);
       await disconnectDatabase().catch(() => undefined);
       if (error) {
         console.error('Error during shutdown:', error);
