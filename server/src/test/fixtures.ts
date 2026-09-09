@@ -50,3 +50,62 @@ export function buildPdf(pageTexts: string[] = ['Hello invoice']): Buffer {
 
 /** Bytes that claim to be a PDF but will not parse. */
 export const invalidPdfBytes = Buffer.from('%PDF-1.4\nnot actually a pdf\n', 'latin1');
+
+/** One text run on a page: position in PDF points, size, and the text itself. */
+type TextRun = [x: number, y: number, size: number, text: string];
+
+/**
+ * A single-page invoice with well-separated fields.
+ *
+ * The OCR tests assert on the exact strings placed here, so recognition is
+ * measured against known input rather than a stub. Positions are in PDF user
+ * space, where y counts up from the bottom of a 612x792 page.
+ */
+export function buildInvoicePdf(): Buffer {
+  const runs: TextRun[] = [
+    [72, 720, 22, 'ACME Supply Co'],
+    [72, 690, 12, '119 Harbour Road, Bristol'],
+    [400, 720, 14, 'INVOICE'],
+    [400, 695, 12, 'Invoice No: INV-2026-0042'],
+    [400, 675, 12, 'Date: 14 March 2026'],
+    [400, 655, 12, 'PO Number: PO-88123'],
+    [72, 560, 12, 'Consulting services'],
+    [72, 540, 12, 'Hardware rental'],
+    [400, 480, 12, 'Subtotal: 4200.00'],
+    [400, 460, 12, 'Tax: 840.00'],
+    [400, 435, 14, 'Total: 5040.00'],
+  ];
+
+  const stream = runs
+    .map(
+      ([x, y, size, text]) =>
+        `BT /F1 ${size} Tf ${x} ${y} Td (${text.replace(/([()\\])/g, '\\$1')}) Tj ET`,
+    )
+    .join('\n');
+
+  const objects: string[] = [];
+  objects[1] = '<< /Type /Catalog /Pages 2 0 R >>';
+  objects[2] = '<< /Type /Pages /Kids [3 0 R] /Count 1 >>';
+  objects[3] =
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] ' +
+    '/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>';
+  objects[4] = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>';
+  objects[5] = `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`;
+
+  const total = objects.length - 1;
+  let out = '%PDF-1.4\n';
+  const offsets: number[] = [];
+  for (let i = 1; i <= total; i++) {
+    offsets[i] = out.length;
+    out += `${i} 0 obj\n${objects[i]}\nendobj\n`;
+  }
+
+  const startxref = out.length;
+  out += `xref\n0 ${total + 1}\n0000000000 65535 f \n`;
+  for (let i = 1; i <= total; i++) {
+    out += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`;
+  }
+  out += `trailer\n<< /Size ${total + 1} /Root 1 0 R >>\nstartxref\n${startxref}\n%%EOF\n`;
+
+  return Buffer.from(out, 'latin1');
+}

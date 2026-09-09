@@ -52,6 +52,14 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: npm
 
+      # Tesseract downloads a ~5MB language file on first use. Cache it so the
+      # OCR tests do not refetch it on every run.
+      - name: Cache Tesseract language data
+        uses: actions/cache@v4
+        with:
+          path: server/.tesseract-cache
+          key: tesseract-${{ runner.os }}-eng
+
       - name: Install dependencies
         run: npm ci
 

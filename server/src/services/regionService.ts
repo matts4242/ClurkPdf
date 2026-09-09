@@ -1,8 +1,12 @@
 import { getPrisma } from '../db/client.js';
+import { snapToText } from './textLayerService.js';
 import type {
   CreateRegionRequest,
   FieldType,
+  NormalizedRect,
+  OcrStatus,
   Region,
+  TextSource,
   UpdateRegionRequest,
 } from '../types/index.js';
 import {
@@ -36,6 +40,13 @@ type RegionRow = {
   height: number;
   fieldType: string;
   fieldLabel: string | null;
+  textSource: string;
+  ocrStatus: string;
+  rawText: string | null;
+  correctedText: string | null;
+  confidence: number | null;
+  ocrError: string | null;
+  ocrAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -51,16 +62,16 @@ function toRegion(row: RegionRow): Region {
     height: row.height,
     fieldType: row.fieldType as FieldType,
     ...(row.fieldLabel === null ? {} : { fieldLabel: row.fieldLabel }),
+    textSource: row.textSource as TextSource,
+    ocrStatus: row.ocrStatus as OcrStatus,
+    ...(row.rawText === null ? {} : { rawText: row.rawText }),
+    ...(row.correctedText === null ? {} : { correctedText: row.correctedText }),
+    ...(row.confidence === null ? {} : { confidence: row.confidence }),
+    ...(row.ocrError === null ? {} : { ocrError: row.ocrError }),
+    ...(row.ocrAt === null ? {} : { ocrAt: row.ocrAt.toISOString() }),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
-}
-
-interface Rect {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
 }
 
 /**
@@ -69,7 +80,7 @@ interface Rect {
  * Checking the far edge as well as the origin is what stops a region from
  * hanging off the right or bottom of the page.
  */
-function assertRectangleFitsPage(rect: Rect): void {
+function assertRectangleFitsPage(rect: NormalizedRect): void {
   const { x, y, width, height } = rect;
 
   // Check only the four rectangle fields by name; callers may hand in a wider
@@ -122,7 +133,17 @@ export async function createRegion(
     throw invalidPage(data.pageNumber, pageCount);
   }
 
-  assertRectangleFitsPage({ x: data.x, y: data.y, width: data.width, height: data.height });
+  const rect: NormalizedRect = { x: data.x, y: data.y, width: data.width, height: data.height };
+  assertRectangleFitsPage(rect);
+
+  // A region highlighted over the PDF's own text is already readable, so fill
+  // its text now rather than leaving it for OCR. The text is derived here from
+  // the rectangle rather than taken from the request, so what is stored always
+  // matches what the region actually covers.
+  const fromTextLayer =
+    data.textSource === 'TEXT_LAYER'
+      ? await readTextLayer(documentId, data.pageNumber, rect)
+      : null;
 
   const row = await getPrisma().region.create({
     data: {
@@ -134,9 +155,53 @@ export async function createRegion(
       height: round(data.height),
       fieldType: data.fieldType,
       fieldLabel: labelFor(data.fieldType, data.fieldLabel),
+      ...(fromTextLayer ?? {}),
     },
   });
   return toRegion(row);
+}
+
+/**
+ * Read a rectangle out of the PDF's text layer, shaped for a Prisma write.
+ *
+ * Confidence is 100 because this is the document's own text, not a guess. If
+ * the rectangle covers no text — a scanned page, or an empty area — the region
+ * is left unread so OCR can still be run against it.
+ */
+async function readTextLayer(
+  documentId: string,
+  pageNumber: number,
+  rect: NormalizedRect,
+): Promise<{
+  textSource: 'TEXT_LAYER';
+  ocrStatus: 'DONE';
+  rawText: string;
+  confidence: number;
+  ocrError: null;
+  ocrAt: Date;
+  /** The box the captured text actually occupies. */
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+} | null> {
+  const snapped = await snapToText(documentId, pageNumber, rect);
+  if (snapped.text === '' || snapped.rect === null) return null;
+
+  return {
+    textSource: 'TEXT_LAYER',
+    ocrStatus: 'DONE',
+    rawText: snapped.text,
+    confidence: 100,
+    ocrError: null,
+    ocrAt: new Date(),
+    // Snap the stored rectangle onto the text it captured, so the box the user
+    // sees matches the value the region holds.
+    x: round(snapped.rect.x),
+    y: round(snapped.rect.y),
+    width: round(snapped.rect.width),
+    height: round(snapped.rect.height),
+  };
 }
 
 export async function getRegionsByDocument(
@@ -148,18 +213,6 @@ export async function getRegionsByDocument(
 
   const rows = await getPrisma().region.findMany({
     where: { documentId, ...(pageNumber === undefined ? {} : { pageNumber }) },
-    orderBy: [{ pageNumber: 'asc' }, { createdAt: 'asc' }],
-  });
-  return rows.map(toRegion);
-}
-
-export async function getRegionsByFieldType(
-  documentId: string,
-  fieldType: FieldType,
-): Promise<Region[]> {
-  await getPageCount(documentId);
-  const rows = await getPrisma().region.findMany({
-    where: { documentId, fieldType },
     orderBy: [{ pageNumber: 'asc' }, { createdAt: 'asc' }],
   });
   return rows.map(toRegion);
@@ -185,7 +238,7 @@ export async function updateRegion(
 
   // Validate the rectangle as it will be after the merge, not just the fields
   // that were sent — a lone `width` can still push the region off the page.
-  const merged: Rect = {
+  const merged: NormalizedRect = {
     x: updates.x ?? existing.x,
     y: updates.y ?? existing.y,
     width: updates.width ?? existing.width,
@@ -199,6 +252,33 @@ export async function updateRegion(
       ? existing.fieldLabel
       : labelFor(fieldType, updates.fieldLabel ?? existing.fieldLabel ?? undefined);
 
+  // Moving or resizing a region puts it over different pixels, so any text
+  // already read from it — and any human correction of that text — no longer
+  // describes what the rectangle covers. Reset it back to un-recognised.
+  const geometryChanged =
+    round(merged.x) !== existing.x ||
+    round(merged.y) !== existing.y ||
+    round(merged.width) !== existing.width ||
+    round(merged.height) !== existing.height;
+
+  // A text-layer region can simply be re-read at its new position, since the
+  // words are already in the PDF. Only an OCR region has to go back to PENDING
+  // and wait for a recognition run.
+  const rederived =
+    geometryChanged && existing.textSource === 'TEXT_LAYER'
+      ? await readTextLayer(documentId, existing.pageNumber, merged)
+      : null;
+
+  const clearedText = {
+    textSource: 'NONE' as const,
+    ocrStatus: 'PENDING' as const,
+    rawText: null,
+    correctedText: null,
+    confidence: null,
+    ocrError: null,
+    ocrAt: null,
+  };
+
   const row = await getPrisma().region.update({
     where: { id: regionId },
     data: {
@@ -208,9 +288,57 @@ export async function updateRegion(
       height: round(merged.height),
       fieldType,
       fieldLabel: label,
+      ...(geometryChanged ? { ...clearedText, ...(rederived ?? {}) } : {}),
+      // An explicit correction still applies when the rectangle did not move.
+      ...(updates.correctedText === undefined || geometryChanged
+        ? {}
+        : { correctedText: updates.correctedText.trim() || null }),
     },
   });
   return toRegion(row);
+}
+
+// --- OCR bookkeeping -----------------------------------------------------
+
+/** Mark regions as in progress so a concurrent reader sees the run started. */
+export async function markRegionsProcessing(regionIds: string[]): Promise<void> {
+  if (regionIds.length === 0) return;
+  await getPrisma().region.updateMany({
+    where: { id: { in: regionIds } },
+    data: { ocrStatus: 'PROCESSING', ocrError: null },
+  });
+}
+
+/** Store a successful recognition. A human correction is left untouched. */
+export async function saveOcrResult(
+  regionId: string,
+  text: string,
+  confidence: number,
+): Promise<Region> {
+  const row = await getPrisma().region.update({
+    where: { id: regionId },
+    data: {
+      textSource: 'OCR',
+      ocrStatus: 'DONE',
+      rawText: text,
+      confidence,
+      ocrError: null,
+      ocrAt: new Date(),
+    },
+  });
+  return toRegion(row);
+}
+
+/** Record a failed recognition against one region. */
+export async function saveOcrError(regionId: string, message: string): Promise<void> {
+  await getPrisma().region.update({
+    where: { id: regionId },
+    data: {
+      ocrStatus: 'ERROR',
+      ocrError: message.slice(0, 500),
+      ocrAt: new Date(),
+    },
+  });
 }
 
 export async function deleteRegion(regionId: string, documentId: string): Promise<void> {

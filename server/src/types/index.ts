@@ -109,8 +109,78 @@ export interface Region {
   fieldType: FieldType;
   /** Only meaningful when `fieldType` is `CUSTOM`. */
   fieldLabel?: string;
+
+  /** Where `rawText` came from. */
+  textSource: TextSource;
+  /** Week 3: OCR. */
+  ocrStatus: OcrStatus;
+  /** Text as OCR read it. A human edit never overwrites this. */
+  rawText?: string;
+  /** Human correction. When present, this is the value to trust. */
+  correctedText?: string;
+  /** Tesseract's own confidence, 0-100. */
+  confidence?: number;
+  /** Why the last attempt failed, when `ocrStatus` is `ERROR`. */
+  ocrError?: string;
+  ocrAt?: string;
+
   createdAt: string;
   updatedAt: string;
+}
+
+/** A rectangle in normalised 0-1 page coordinates. */
+export interface NormalizedRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export const OCR_STATUSES = ['PENDING', 'PROCESSING', 'DONE', 'ERROR'] as const;
+export type OcrStatus = (typeof OCR_STATUSES)[number];
+
+export const TEXT_SOURCES = ['NONE', 'OCR', 'TEXT_LAYER'] as const;
+export type TextSource = (typeof TEXT_SOURCES)[number];
+
+export const isTextSource = (value: unknown): value is TextSource =>
+  typeof value === 'string' && (TEXT_SOURCES as readonly string[]).includes(value);
+
+/** One positioned run of text from the PDF's own text layer. */
+export interface TextItem {
+  text: string;
+  /** Normalised 0-1, y measured down from the top of the page. */
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** Font height in PDF points, useful for styling the overlay. */
+  fontSize: number;
+}
+
+export interface TextLayer {
+  pageNumber: number;
+  /** Page size in PDF points, for reference. */
+  pageWidth: number;
+  pageHeight: number;
+  textItems: TextItem[];
+  /** False for a scanned page, which has no text layer and needs OCR. */
+  hasText: boolean;
+}
+
+/** One region's outcome from an OCR run. */
+export interface OcrRegionResult {
+  regionId: string;
+  status: OcrStatus;
+  text?: string;
+  confidence?: number;
+  error?: string;
+}
+
+export interface RunOcrResponse {
+  results: OcrRegionResult[];
+  /** How many regions were recognised, and how many failed. */
+  succeeded: number;
+  failed: number;
 }
 
 export interface CreateRegionRequest {
@@ -121,6 +191,12 @@ export interface CreateRegionRequest {
   height: number;
   fieldType: FieldType;
   fieldLabel?: string;
+  /**
+   * `TEXT_LAYER` fills the region's text from the PDF's own text layer at
+   * creation time, which is what the highlight mode uses. Anything else leaves
+   * the region unread until OCR runs.
+   */
+  textSource?: TextSource;
 }
 
 export interface UpdateRegionRequest {
@@ -130,6 +206,8 @@ export interface UpdateRegionRequest {
   height?: number;
   fieldType?: FieldType;
   fieldLabel?: string;
+  /** Human correction of the OCR text. Pass an empty string to clear it. */
+  correctedText?: string;
 }
 
 export interface ListRegionsResponse {

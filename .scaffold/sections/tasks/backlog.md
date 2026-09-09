@@ -52,10 +52,63 @@ Deviation from the spec, recorded in the README: Prisma 7 no longer accepts
 `url` in the datasource block, so the connection lives in `prisma.config.ts`
 and the runtime client uses the `@prisma/adapter-pg` driver adapter.
 
-## Weeks 3-7
+## Week 3 — OCR
 
-Not started. One line of intent each in `Project_Overview/Week 3.1` through
-`Week 7.1`: OCR, text-layer extraction, batch queueing, templates, export.
+- [x] `ocrService` crops each region out of the rendered page and runs it
+      through Tesseract.js against a shared worker pool
+- [x] `POST /api/documents/:id/ocr`, processing every region or a named subset,
+      with per-region error isolation
+- [x] Results saved to the region rows: `rawText`, `confidence`, `ocrStatus`,
+      `ocrError`, `ocrAt`
+- [x] Confidence shown colour-coded in the UI (green >90, amber 70-90, red <70)
+- [x] Text correction panel with inline editing
 
-Week 3 (OCR) builds directly on the regions this week added: crop each stored
-rectangle out of the rendered page image and run it through Tesseract.
+Also delivered:
+
+- [x] `correctedText` is stored separately from `rawText`, so the original
+      reading survives an edit and can be reverted to
+- [x] Moving or resizing a region clears its OCR text, since the rectangle then
+      covers different pixels
+- [x] Re-read a single region, or only the ones not yet read
+- [x] 13 OCR tests running real recognition against a generated invoice
+
+Deviations from the spec, recorded in the README: the endpoint takes region ids
+rather than raw rectangles (the regions already live in the database), and
+recognition is bounded by `OCR_CONCURRENCY` rather than an unbounded
+`Promise.all`, because each job holds a WASM instance.
+
+## Week 4 — Text layer extraction
+
+- [x] `textLayerService` extracts positioned text runs with pdf.js, normalised
+      to the same 0-1 space as regions
+- [x] `GET /api/documents/:id/text-layer/:pageNumber`, reporting `hasText:
+      false` for a scan
+- [x] `TextLayer` component renders an invisible, selectable copy of the page
+      text over the image
+- [x] Floating toolbar on selection, with 1-9 keyboard shortcuts
+- [x] Smart snapping to word and line boundaries
+
+Also delivered:
+
+- [x] Highlighting produces an ordinary `Region` with `textSource: TEXT_LAYER`,
+      so corrections, the sidebar and Week 7's export need no second path
+- [x] Text is derived server-side from the rectangle, so a moved text-layer
+      region re-reads itself rather than dropping back to PENDING
+- [x] The stored rectangle snaps onto the text it captured
+- [x] 17 text-layer tests, 95 across the project
+
+Two bugs found while testing this slice: the region canvas sat over the text
+layer and swallowed the caret, and the first overlap rule required half a text
+run to be inside the rectangle — which no ordinary selection satisfies, because
+pdf.js emits a whole line as one run.
+
+## Weeks 5-7
+
+Not started. One line of intent each in `Project_Overview/Week 5.1` through
+`Week 7.1`: batch queueing, templates, export.
+
+Week 5 needs Redis and Bull, and replaces the serial upload loop in `App.tsx`
+with a real queue plus WebSocket progress. Week 7's export is the first point
+where the two capture modes have to produce one flat row per document; because
+both already write to `Region`, that should be a single query rather than a
+merge.

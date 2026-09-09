@@ -50,6 +50,28 @@ export const config = {
   /** How long browsers may cache rendered page images. */
   imageCacheSeconds: int(process.env.IMAGE_CACHE_SECONDS, 60 * 60 * 24),
 
+  /** Tesseract language, e.g. `eng` or `eng+deu`. */
+  ocrLanguage: process.env.OCR_LANGUAGE ?? 'eng',
+
+  /**
+   * Where Tesseract keeps its downloaded language data. Without this it writes
+   * a 5MB file into the process's working directory.
+   */
+  ocrCacheDir: path.resolve(SERVER_ROOT, process.env.OCR_CACHE_DIR ?? '.tesseract-cache'),
+
+  /** How many regions are recognised at once. Each worker is a WASM instance. */
+  ocrConcurrency: int(process.env.OCR_CONCURRENCY, 2),
+
+  /** Give up on a single region after this long. */
+  ocrTimeoutMs: int(process.env.OCR_TIMEOUT_MS, 30_000),
+
+  /**
+   * Crops narrower than this are upscaled before recognition. Tesseract is
+   * tuned for roughly 300dpi and pages render at PAGE_DPI (150 by default), so
+   * a small field would otherwise arrive at half the resolution it wants.
+   */
+  ocrMinCropWidth: int(process.env.OCR_MIN_CROP_WIDTH, 1000),
+
   isProduction: process.env.NODE_ENV === 'production',
 
   /** Suppresses request logging so the test output stays readable. */

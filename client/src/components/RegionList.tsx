@@ -1,7 +1,10 @@
 import { SquareDashed, Trash2 } from 'lucide-react';
 import { FieldTypeSelector } from './FieldTypeSelector';
+import { RegionTextPanel } from './RegionTextPanel';
 import {
   FIELD_TYPE_META,
+  confidenceBand,
+  regionValue,
   type FieldType,
   type Region,
   type UpdateRegionInput,
@@ -15,6 +18,10 @@ export interface RegionListProps {
   onRegionSelect: (regionId: string) => void;
   onRegionDelete: (regionId: string) => void;
   onRegionUpdate: (regionId: string, updates: UpdateRegionInput) => void;
+  /** Re-read one region. */
+  onRegionRerunOcr: (regionId: string) => void;
+  /** True while an OCR run is in flight. */
+  ocrRunning?: boolean;
 }
 
 /**
@@ -30,6 +37,8 @@ export function RegionList({
   onRegionSelect,
   onRegionDelete,
   onRegionUpdate,
+  onRegionRerunOcr,
+  ocrRunning = false,
 }: RegionListProps) {
   if (regions.length === 0) {
     return (
@@ -86,6 +95,21 @@ export function RegionList({
                 </button>
               </div>
 
+              {!isSelected && regionValue(region) !== '' && (
+                <p className="mt-1 flex items-center gap-1.5">
+                  <span
+                    className={`shrink-0 rounded px-1 py-0.5 text-[9px] font-medium tabular-nums ${
+                      confidenceBand(region.confidence).className
+                    }`}
+                  >
+                    {confidenceBand(region.confidence).label}
+                  </span>
+                  <span className="truncate font-mono text-[10px] text-slate-500">
+                    {regionValue(region)}
+                  </span>
+                </p>
+              )}
+
               {isSelected && (
                 <div className="mt-2 space-y-1.5">
                   <FieldTypeSelector
@@ -99,6 +123,14 @@ export function RegionList({
                       })
                     }
                   />
+
+                  <RegionTextPanel
+                    region={region}
+                    disabled={ocrRunning}
+                    onSave={(correctedText) => onRegionUpdate(region.id, { correctedText })}
+                    onRerun={() => onRegionRerunOcr(region.id)}
+                  />
+
                   <p className="font-mono text-[10px] text-slate-400 tabular-nums">
                     {region.x.toFixed(3)}, {region.y.toFixed(3)} &middot;{' '}
                     {region.width.toFixed(3)} &times; {region.height.toFixed(3)}

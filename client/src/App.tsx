@@ -3,7 +3,7 @@ import { FileStack, Trash2 } from 'lucide-react';
 import { DocumentViewer } from './components/DocumentViewer';
 import { FileDropzone } from './components/FileDropzone';
 import { UploadProgress, type UploadProgressStatus } from './components/UploadProgress';
-import { deleteDocument, listDocuments } from './api/client';
+import { ApiRequestError, deleteDocument, listDocuments } from './api/client';
 import { useDocumentUpload } from './hooks/useDocumentUpload';
 import type { Document } from './types';
 import { formatBytes, formatPageCount } from './utils/format';
@@ -24,7 +24,7 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [queue, setQueue] = useState<QueueItem[]>([]);
 
-  const { upload, progress, status } = useDocumentUpload();
+  const { upload, progress, status, cancel } = useDocumentUpload();
   const pendingRef = useRef<File[]>([]);
   const busyRef = useRef(false);
   const retriesRef = useRef(new Map<string, number>());
@@ -82,7 +82,7 @@ export default function App() {
           retriesRef.current.set(key, attempts);
           const message = error instanceof Error ? error.message : 'Upload failed';
 
-          if (attempts < MAX_RETRIES && isRetryable(error)) {
+          if (attempts < MAX_RETRIES && error instanceof ApiRequestError && error.isRetryable) {
             patchQueueItem(key, {
               status: 'error',
               errorMessage: `${message} Retrying (${attempts}/${MAX_RETRIES})...`,
@@ -144,13 +144,22 @@ export default function App() {
   // The active row mirrors the live hook state; finished rows keep their own.
   const activeKey = queue.find((item) => item.status === 'uploading')?.key;
 
+  const cancelActive = useCallback(() => {
+    cancel();
+    pendingRef.current = [];
+    if (activeKey !== undefined) {
+      retriesRef.current.delete(activeKey);
+      setQueue((items) => items.filter((item) => item.key !== activeKey));
+    }
+  }, [cancel, activeKey]);
+
   return (
     <div className="flex h-full flex-col">
       <header className="flex items-center gap-2 border-b border-slate-200 bg-white px-5 py-3">
         <FileStack className="h-5 w-5 text-sky-600" aria-hidden="true" />
         <h1 className="text-sm font-semibold text-slate-800">Invoice Processor</h1>
         <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-500">
-          Week 2 &middot; Regions
+          Week 4 &middot; Text layer
         </span>
         <span className="ml-auto text-xs text-slate-400">
           {documents.length} {documents.length === 1 ? 'document' : 'documents'}
@@ -173,6 +182,7 @@ export default function App() {
                     ? {}
                     : { errorMessage: item.errorMessage })}
                   onRetry={() => retryItem(item)}
+                  {...(item.key === activeKey ? { onCancel: cancelActive } : {})}
                 />
               ))}
             </div>
@@ -255,15 +265,6 @@ function liveStatus(
     default:
       return fallback;
   }
-}
-
-function isRetryable(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'isRetryable' in error &&
-    Boolean((error as { isRetryable: unknown }).isRetryable)
-  );
 }
 
 const sleep = (ms: number): Promise<void> =>

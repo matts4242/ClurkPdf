@@ -3,15 +3,22 @@ import * as api from '../api/client';
 import { ApiRequestError } from '../api/client';
 import type { CreateRegionInput, Region, UpdateRegionInput } from '../types';
 
+export interface OcrSummary {
+  succeeded: number;
+  failed: number;
+}
+
 export interface UseRegionsReturn {
   regions: Region[];
-  loading: boolean;
   error: string | null;
   create: (input: CreateRegionInput) => Promise<Region | null>;
   update: (regionId: string, updates: UpdateRegionInput) => Promise<Region | null>;
   remove: (regionId: string) => Promise<boolean>;
-  refresh: () => void;
   clearError: () => void;
+  /** Recognise text in some or all regions. */
+  runOcr: (options?: { regionIds?: string[]; onlyPending?: boolean }) => Promise<OcrSummary | null>;
+  /** True while a recognition run is in flight. */
+  ocrRunning: boolean;
 }
 
 /**
@@ -24,9 +31,7 @@ export interface UseRegionsReturn {
  */
 export function useRegions(documentId: string | null): UseRegionsReturn {
   const [regions, setRegions] = useState<Region[]>([]);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [reloadToken, setReloadToken] = useState(0);
 
   const mountedRef = useRef(true);
   useEffect(() => {
@@ -43,7 +48,6 @@ export function useRegions(documentId: string | null): UseRegionsReturn {
     }
 
     const controller = new AbortController();
-    setLoading(true);
     setError(null);
 
     api
@@ -56,13 +60,10 @@ export function useRegions(documentId: string | null): UseRegionsReturn {
         if (mountedRef.current) {
           setError(caught instanceof Error ? caught.message : 'Could not load regions');
         }
-      })
-      .finally(() => {
-        if (mountedRef.current) setLoading(false);
       });
 
     return () => controller.abort();
-  }, [documentId, reloadToken]);
+  }, [documentId]);
 
   const describe = (caught: unknown, fallback: string): string =>
     caught instanceof Error ? caught.message : fallback;
@@ -141,8 +142,38 @@ export function useRegions(documentId: string | null): UseRegionsReturn {
     [documentId],
   );
 
-  const refresh = useCallback(() => setReloadToken((token) => token + 1), []);
   const clearError = useCallback(() => setError(null), []);
 
-  return { regions, loading, error, create, update, remove, refresh, clearError };
+  const [ocrRunning, setOcrRunning] = useState(false);
+
+  const runOcr = useCallback(
+    async (options: { regionIds?: string[]; onlyPending?: boolean } = {}) => {
+      if (!documentId) return null;
+      setOcrRunning(true);
+      setError(null);
+      try {
+        const summary = await api.runOcr(documentId, options);
+        // The run rewrote text, confidence and status on the server; refetch
+        // rather than trying to merge the per-region results by hand.
+        const reloaded = await api.listRegions(documentId);
+        if (mountedRef.current) {
+          setRegions(reloaded);
+          if (summary.failed > 0) {
+            setError(
+              `${summary.failed} of ${summary.failed + summary.succeeded} regions could not be read.`,
+            );
+          }
+        }
+        return { succeeded: summary.succeeded, failed: summary.failed };
+      } catch (caught) {
+        if (mountedRef.current) setError(describe(caught, 'Could not run OCR'));
+        return null;
+      } finally {
+        if (mountedRef.current) setOcrRunning(false);
+      }
+    },
+    [documentId],
+  );
+
+  return { regions, error, create, update, remove, clearError, runOcr, ocrRunning };
 }

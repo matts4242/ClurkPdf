@@ -4,10 +4,10 @@ A browser-based tool for digitising paper and PDF invoices. Accounting teams
 upload a batch, mark up the fields they care about, and export structured data.
 
 The build follows the seven-week plan in [`Project_Overview/`](./Project_Overview),
-one vertical slice at a time. **Weeks 1 and 2 are implemented: upload a PDF,
-view it rendered in the browser, and draw labelled extraction regions on the
-page that persist to PostgreSQL.** Weeks 3 to 7 add OCR, text-layer extraction,
-batch queueing, templates, and export.
+one vertical slice at a time. **Weeks 1 to 4 are implemented: upload a PDF,
+view it rendered in the browser, mark up the fields you care about — either by
+drawing regions and running OCR, or by highlighting the document's own text —
+and edit the results.** Weeks 5 to 7 add batch queueing, templates, and export.
 
 ## Requirements
 
@@ -90,6 +90,11 @@ them; every value there is already the built-in default.
 | `CLIENT_ORIGIN` | `http://localhost:5173` | Comma-separated allowed browser origins |
 | `PAGE_DPI` | `150` | Resolution page images are rendered at |
 | `THUMBNAIL_WIDTH` | `150` | Width of the page-1 preview, in pixels |
+| `OCR_LANGUAGE` | `eng` | Tesseract language, e.g. `eng+deu` |
+| `OCR_CACHE_DIR` | `.tesseract-cache` | Where the ~5MB language file is kept |
+| `OCR_CONCURRENCY` | `2` | Regions recognised at once |
+| `OCR_TIMEOUT_MS` | `30000` | Give up on one region after this long |
+| `OCR_MIN_CROP_WIDTH` | `1000` | Narrower crops are upscaled before recognition |
 
 The client reads `VITE_SERVER_ORIGIN`, defaulting to `http://localhost:3001`,
 and `VITE_PAGE_DPI`, which must match the server's `PAGE_DPI` so that 100% zoom
@@ -116,6 +121,8 @@ Every endpoint answers with the same envelope, success or failure.
 | `POST` | `/api/documents/:id/regions` | Create a region |
 | `PUT` | `/api/documents/:id/regions/:regionId` | Move, resize, or retype a region |
 | `DELETE` | `/api/documents/:id/regions/:regionId` | Delete a region |
+| `POST` | `/api/documents/:id/ocr` | Read the text inside the document's regions |
+| `GET` | `/api/documents/:id/text-layer/:n` | The page's own text, with positions |
 | `GET` | `/api/health` | Liveness check |
 
 `GET /api/documents/:id` also returns `regionCount` and `pagesWithRegions`.
@@ -126,6 +133,70 @@ Error codes: `FILE_TOO_LARGE` (413), `INVALID_FILE_TYPE` (415),
 `PROCESSING_ERROR` (500), `INTERNAL_ERROR` (500), `REGION_NOT_FOUND` (404),
 `REGION_OUT_OF_BOUNDS` (400), `INVALID_DIMENSIONS` (400), `INVALID_PAGE` (400),
 `INVALID_FIELD_TYPE` (400).
+
+### OCR
+
+`POST /api/documents/:id/ocr` recognises the text inside a document's regions.
+With an empty body it processes every region; pass `regionIds` to redo a
+subset, or `onlyPending: true` to skip regions that already have text.
+
+```jsonc
+{ "results": [ { "regionId": "...", "status": "DONE", "text": "INV-2026-0042", "confidence": 91 } ],
+  "succeeded": 1, "failed": 0 }
+```
+
+Each region is cropped out of the rendered page and passed to Tesseract on its
+own, rather than reading the whole page and matching text back to boxes. That
+keeps neighbouring fields from bleeding into a result. Crops narrower than
+`OCR_MIN_CROP_WIDTH` are upscaled first, because pages render at 150dpi and
+Tesseract is tuned for roughly 300.
+
+A failure is recorded against the one region that failed, as
+`ocrStatus: "ERROR"` with a message; the rest of the run continues.
+
+**Raw text and corrections are separate.** `rawText` is what OCR read and is
+never overwritten by a person. An edit is stored as `correctedText`, so the
+original stays available to compare against and revert to. Send
+`correctedText` to `PUT .../regions/:regionId`; an empty string clears it.
+
+**Moving or resizing a region discards its text.** The rectangle then covers
+different pixels, so the stored reading — and any correction of it — no longer
+describes it. An OCR region returns to `PENDING` and waits for another run; a
+text-layer region re-reads itself immediately, since its words are already in
+the PDF. Changing only the field type leaves the text alone either way.
+
+### Text layer
+
+`GET /api/documents/:id/text-layer/:n` returns the page's own text runs with
+positions normalised the same way regions are, so the two line up exactly:
+
+```jsonc
+{ "pageNumber": 1, "pageWidth": 612, "pageHeight": 792, "hasText": true,
+  "textItems": [ { "text": "Invoice No: INV-2026-0042",
+                   "x": 0.6536, "y": 0.1073, "width": 0.2365, "height": 0.0152,
+                   "fontSize": 12 } ] }
+```
+
+`hasText: false` means the page is a scan; there is nothing to highlight and
+the OCR path is the one to use.
+
+**Two ways to capture a field, one kind of region.** Draw a box and run OCR, or
+highlight the document's own text. Highlighting sets `textSource: "TEXT_LAYER"`
+and the server fills the text immediately at 100% confidence, because it is the
+document's text rather than a guess. Everything downstream — the sidebar, the
+correction panel, and the export Week 7 adds — treats both identically.
+
+**Highlighting snaps to whole runs.** pdf.js reports a line as a single run, so
+a selection of a few characters covers only a fraction of it. A run counts as
+selected when the rectangle covers most of its height and overlaps it
+horizontally at all, which is the "expand to word and line boundaries" the spec
+asks for: touch a line anywhere and you capture the whole field, while the line
+above and the neighbouring column stay out. The stored rectangle is then snapped
+onto the text it captured, so the box matches the value.
+
+Because the text comes from the rectangle rather than from the browser, moving a
+text-layer region simply **re-reads** it at its new position instead of dropping
+back to `PENDING` the way an OCR region must.
 
 ### Regions
 
@@ -155,14 +226,19 @@ document at `status: "error"` with a message, since the upload itself succeeded.
 ## Testing
 
 ```bash
-npm test               # 65 tests
+npm test               # 95 tests
 ```
 
-- **Server (50)** — HTTP endpoints, PDF rendering, region validation and
-  ownership, cascade deletes, and path-traversal defences. Each test runs
-  against a real server on an ephemeral port and a real database.
+- **Server (80)** — HTTP endpoints, PDF rendering, region validation and
+  ownership, OCR, text-layer extraction and snapping, cascade deletes, and
+  path-traversal defences. Each test runs against a real server on an ephemeral
+  port and a real database.
 - **Client (15)** — the coordinate maths, including that a region covers the
   same content at every zoom level.
+
+The OCR tests run Tesseract for real against a generated invoice whose text the
+fixture chooses, so recognition is measured rather than stubbed. The first run
+downloads the language data; CI caches it.
 
 The server suite starts from an empty schema: migrations are applied once, then
 every test truncates. Two guards keep that away from real data. `DATABASE_URL`
@@ -176,6 +252,29 @@ Test PDFs are generated byte-by-byte in `server/src/test/fixtures.ts`, so no
 binary fixtures are stored in the repository.
 
 ## Notes on the specification
+
+### Week 4
+
+- **Highlighting stores a region, not a separate entity.** The spec sketches a
+  `DocumentAttribute` alongside regions. Using one `Region` with a `textSource`
+  of `OCR` or `TEXT_LAYER` means the sidebar, corrections and export all work
+  the same whichever mode produced the value, instead of two parallel paths.
+- **The server derives the text from the rectangle rather than trusting the
+  browser's selection string.** That is what lets a moved region re-read itself,
+  and it removes any chance of the stored text drifting from the stored box.
+- **Snapping falls out of the native caret.** Because the overlay holds real
+  selectable text, double-click for a word and triple-click for a line come from
+  the browser, so no bespoke snapping code was needed.
+
+### Week 3
+
+- **The OCR endpoint takes region ids, not raw rectangles.** The spec's version
+  accepted `{ regions: [{pageNumber, x, y, ...}] }`, but since Week 2 the
+  regions already live in the database, and the same spec asks for results to be
+  saved back to those rows. Taking ids makes that unambiguous.
+- **Recognition is bounded, not an unbounded `Promise.all`.** Each job holds a
+  WASM instance, so a large batch would otherwise try to start one per region at
+  once. Regions run `OCR_CONCURRENCY` at a time against a shared worker pool.
 
 ### Week 2
 
