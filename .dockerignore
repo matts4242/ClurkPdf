@@ -1,0 +1,25 @@
+# Everything the image builds for itself, plus anything that must never be
+# baked into a layer.
+node_modules
+**/node_modules
+**/dist
+server/generated
+server/uploads
+server/.tesseract-cache
+uploads
+
+.env
+.env.*
+!deploy/env.example
+**/.env
+**/.env.*
+
+.git
+.github
+.vscode
+.scaffold
+.agents
+Project_Overview
+filestructure
+*.log
+*.tsbuildinfo

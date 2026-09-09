@@ -23,7 +23,8 @@
     "test:server": "npm run test --workspace server",
     "test:client": "npm run test --workspace client",
     "db:migrate": "npm run db:migrate --workspace server",
-    "db:deploy": "npm run db:deploy --workspace server"
+    "db:deploy": "npm run db:deploy --workspace server",
+    "deploy": "bash scripts/deploy.sh"
   },
   "devDependencies": {
     "concurrently": "^10.0.5"

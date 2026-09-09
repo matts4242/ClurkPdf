@@ -28,6 +28,82 @@ let scheduler: Scheduler | null = null;
 let starting: Promise<Scheduler> | null = null;
 
 /**
+ * How long the pool has to come up. The first run downloads roughly 5MB of
+ * language data, so this is far longer than recognising anything takes.
+ */
+const STARTUP_TIMEOUT_MS = 120_000;
+
+/** Reject if `work` has not settled within `ms`. */
+function withDeadline<T>(work: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(processingError(`${message} after ${ms}ms`)), ms);
+  });
+
+  return Promise.race([work, deadline]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+/**
+ * Build the worker pool.
+ *
+ * Everything that can go wrong here happens on the first OCR request of a
+ * fresh deployment, when Tesseract fetches its language data: an unreachable
+ * network leaves `createWorker` pending indefinitely and reports the failure
+ * through `errorHandler` instead of rejecting. So the startup watches for both
+ * — a reported worker error and its own deadline — and tears the half-built
+ * pool down rather than leaving a request waiting on it.
+ */
+async function startScheduler(): Promise<Scheduler> {
+  await fs.mkdir(config.ocrCacheDir, { recursive: true });
+  const created = createScheduler();
+
+  let failStartup: ((error: unknown) => void) | null = null;
+  const workerFailed = new Promise<never>((_resolve, reject) => {
+    failStartup = (error: unknown) =>
+      reject(
+        processingError('An OCR worker failed to start', {
+          reason: error instanceof Error ? error.message : String(error),
+        }),
+      );
+  });
+
+  const build = (async () => {
+    for (let i = 0; i < config.ocrConcurrency; i++) {
+      const worker = await createWorker(config.ocrLanguage, undefined, {
+        // Without an explicit cache path Tesseract writes its 5MB language
+        // file into the current working directory.
+        cachePath: config.ocrCacheDir,
+        // The default logger prints a progress line per frame.
+        logger: () => undefined,
+        errorHandler: (error: unknown) => {
+          console.error('[ocr] worker error:', error);
+          failStartup?.(error);
+        },
+      });
+      created.addWorker(worker);
+    }
+    return created;
+  })();
+
+  try {
+    const pool = await withDeadline(
+      Promise.race([build, workerFailed]),
+      STARTUP_TIMEOUT_MS,
+      'OCR workers did not start',
+    );
+    // Past this point a worker error belongs to whichever job caused it.
+    failStartup = null;
+    return pool;
+  } catch (error) {
+    failStartup = null;
+    await created.terminate().catch(() => undefined);
+    throw error;
+  }
+}
+
+/**
  * Start the worker pool once, on first use.
  *
  * Workers are expensive to create and hold a WASM instance each, so they are
@@ -38,26 +114,17 @@ async function getScheduler(): Promise<Scheduler> {
   if (scheduler) return scheduler;
   if (starting) return starting;
 
-  starting = (async () => {
-    await fs.mkdir(config.ocrCacheDir, { recursive: true });
-    const created = createScheduler();
-
-    for (let i = 0; i < config.ocrConcurrency; i++) {
-      const worker = await createWorker(config.ocrLanguage, undefined, {
-        // Without an explicit cache path Tesseract writes its 5MB language
-        // file into the current working directory.
-        cachePath: config.ocrCacheDir,
-        // The default logger prints a progress line per frame.
-        logger: () => undefined,
-        errorHandler: (error: unknown) => console.error('[ocr] worker error:', error),
-      });
-      created.addWorker(worker);
-    }
-
-    scheduler = created;
-    starting = null;
-    return created;
-  })();
+  starting = startScheduler()
+    .then((pool) => {
+      scheduler = pool;
+      return pool;
+    })
+    // A failed start is not remembered. The usual cause is the one-off
+    // language download failing, and the next request should try again rather
+    // than await an attempt that is never going to succeed.
+    .finally(() => {
+      starting = null;
+    });
 
   return starting;
 }
@@ -135,17 +202,12 @@ export async function processRegion(
   const crop = await cropRegionToPng(documentId, pageNumber, rect);
   const pool = await getScheduler();
 
-  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const recognition = pool.addJob('recognize', crop);
-    const timeout = new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(
-        () => reject(processingError(`OCR timed out after ${config.ocrTimeoutMs}ms`)),
-        config.ocrTimeoutMs,
-      );
-    });
-
-    const result = await Promise.race([recognition, timeout]);
+    const result = await withDeadline(
+      pool.addJob('recognize', crop),
+      config.ocrTimeoutMs,
+      'OCR timed out',
+    );
     const data = (result as { data: { text: string; confidence: number } }).data;
 
     return {
@@ -158,7 +220,5 @@ export async function processRegion(
     throw processingError('OCR failed for this region', {
       reason: error instanceof Error ? error.message : String(error),
     });
-  } finally {
-    if (timer) clearTimeout(timer);
   }
 }

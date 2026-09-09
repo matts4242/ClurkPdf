@@ -1,0 +1,29 @@
+# SITE_ADDRESS is the public address of the site.
+#
+#   :80              plain HTTP, reached by the server's IP address (default)
+#   invoices.example.com   HTTPS, certificate obtained and renewed by Caddy
+{$SITE_ADDRESS::80} {
+	encode zstd gzip
+
+	# The API and the rendered page images both live on the Node service.
+	handle /api/* {
+		reverse_proxy server:3001
+	}
+
+	handle /uploads/* {
+		reverse_proxy server:3001
+	}
+
+	# Everything else is the built client. Vite fingerprints the files under
+	# /assets, so they can be cached indefinitely; index.html must not be.
+	handle {
+		root * /srv
+
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+
+		try_files {path} /index.html
+		file_server
+	}
+}

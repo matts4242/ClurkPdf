@@ -44,6 +44,22 @@ Already have PostgreSQL? Skip `docker compose` and point `DATABASE_URL` and
 `TEST_DATABASE_URL` in `server/.env` at your own server. The test database must
 exist and its name must end in `_test`.
 
+## Deployment
+
+On any Linux host with Docker — a Hostinger VPS, for instance — the whole stack
+comes up with one command:
+
+```bash
+git clone https://github.com/matts4242/ClurkPdf.git && cd ClurkPdf
+./scripts/deploy.sh                        # http, on the machine's IP address
+./scripts/deploy.sh invoices.example.com   # https, certificate from Caddy
+```
+
+That builds three containers — Caddy serving the client and proxying the API,
+the Node server, and PostgreSQL — applies the migrations, and waits for the API
+to report healthy. [`DEPLOY.md`](./DEPLOY.md) covers sizing, firewalls,
+updates, backups and the settings in `deploy/env.example`.
+
 ## Layout
 
 ```
@@ -51,7 +67,8 @@ client/     React 19 + TypeScript + Vite + Tailwind front end
 server/     Express + TypeScript API
   prisma/   Schema and migrations
   uploads/  Uploaded PDFs and rendered page images (gitignored)
-scripts/    Database bootstrap for docker-compose
+deploy/     Production images, Caddy config, deployment settings
+scripts/    Database bootstrap for docker-compose, deployment script
 Project_Overview/  The week-by-week build specification
 ```
 
@@ -69,6 +86,7 @@ Run these from the repository root.
 | `npm run db:migrate` | Creates and applies a migration from the schema |
 | `npm run db:deploy` | Applies existing migrations (use in deployment) |
 | `npm start` | Runs the compiled API from `server/dist` |
+| `npm run deploy` | Builds and starts the production stack (see [`DEPLOY.md`](./DEPLOY.md)) |
 
 Each package also runs on its own with `npm run dev` inside `client/` or
 `server/`.

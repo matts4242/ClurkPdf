@@ -1,0 +1,66 @@
+# API server: Express, Prisma, pdf.js and Tesseract.
+#
+# Debian rather than Alpine on purpose. @napi-rs/canvas and tesseract.js both
+# ship prebuilt glibc binaries, and pulling the musl variants in is a class of
+# breakage this image does not need. Prisma 7 talks to Postgres through the pg
+# driver adapter, so there is no native query engine to match against the base
+# image either.
+
+FROM node:22-bookworm-slim AS build
+
+WORKDIR /app
+
+# Manifests first: this layer is only invalidated when a dependency changes,
+# so ordinary source edits reuse the cached install.
+COPY package.json package-lock.json ./
+COPY server/package.json server/package.json
+COPY client/package.json client/package.json
+RUN npm ci
+
+COPY server/ server/
+
+# `prisma generate` resolves the datasource URL out of prisma.config.ts even
+# though generating a client touches no database. A placeholder satisfies it.
+# The runtime stage below is a separate image and never sees this value; the
+# real URL arrives from the environment at startup.
+ENV DATABASE_URL=postgresql://placeholder
+
+# `build` runs `prisma generate` before tsc, so the client is generated here.
+RUN npm run build --workspace server
+
+
+FROM node:22-bookworm-slim AS runtime
+
+# Fonts for PDFs that reference a font instead of embedding it. Without these
+# such pages rasterise with missing glyphs, which OCR then reads as noise.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends fontconfig fonts-dejavu-core \
+  && rm -rf /var/lib/apt/lists/*
+
+ENV NODE_ENV=production
+WORKDIR /app/server
+
+# node_modules comes over whole, development dependencies included, because the
+# entrypoint runs `prisma migrate deploy` and the Prisma CLI is one of them.
+# Rebuilding a production-only tree and then adding the CLI back costs a second
+# network install and risks a version that does not match the lockfile.
+COPY --from=build /app/node_modules /app/node_modules
+COPY --from=build /app/package.json /app/package.json
+COPY --from=build /app/server/package.json ./package.json
+COPY --from=build /app/server/prisma ./prisma
+COPY --from=build /app/server/prisma.config.ts ./prisma.config.ts
+COPY --from=build /app/server/generated ./generated
+COPY --from=build /app/server/dist ./dist
+COPY deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
+
+# Create the mount points while still root so a fresh named volume inherits
+# `node` ownership; the server writes to both.
+RUN mkdir -p uploads .tesseract-cache \
+  && chown -R node:node /app/server/uploads /app/server/.tesseract-cache \
+  && chmod +x /usr/local/bin/entrypoint.sh
+
+USER node
+EXPOSE 3001
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["node", "dist/index.js"]
