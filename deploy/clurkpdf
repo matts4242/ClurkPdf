@@ -1,0 +1,279 @@
+#!/usr/bin/env bash
+#
+#   clurkpdf — manage an installed deployment
+#
+# Symlinked into /usr/local/bin by the installer. Everything it knows comes
+# from /etc/clurkpdf/install.conf, so it works the same whether the deployment
+# is in the default place or somewhere else entirely.
+
+set -Eeuo pipefail
+
+CLI_VERSION='1.0.0'
+UI_LOG=/dev/null
+
+usage() {
+  cat <<'EOF'
+clurkpdf — manage this ClurkPdf deployment
+
+USAGE
+  clurkpdf <command> [arguments]
+
+COMMANDS
+  status              Service state, revision, disk use and document count
+  health              Ask the API's /api/health endpoint
+  doctor              Check every moving part and say what is wrong
+  logs [-f] [-n N]    Service journal; -f follows
+  start|stop|restart  Control the service
+  update [options]    Pull, rebuild, migrate and restart (see --help)
+  backup              Dump the database into the data directory
+  config              Show the settings the service is running with
+  db                  Open a psql shell on the application database
+  uninstall [options] Remove the deployment (see --help)
+  version             Version of this command and of the deployment
+
+Most commands need root; status, health, logs and version do not.
+EOF
+}
+
+if [[ -z ${CLURK_LIB_DIR:-} ]]; then
+  self=${BASH_SOURCE[0]}
+  # /usr/local/bin/clurkpdf is a symlink into the deployment.
+  while [[ -L $self ]]; do
+    target=$(readlink "$self")
+    [[ $target == /* ]] && self=$target || self=$(dirname -- "$self")/$target
+  done
+  CLURK_LIB_DIR=$(cd -- "$(dirname -- "$self")/lib" && pwd)
+  export CLURK_LIB_DIR
+fi
+# shellcheck source=lib/ui.sh
+. "${CLURK_LIB_DIR}/ui.sh"
+# shellcheck source=lib/common.sh
+. "${CLURK_LIB_DIR}/common.sh"
+
+DEPLOY_DIR=$(cd -- "${CLURK_LIB_DIR}/.." && pwd)
+
+# --------------------------------------------------------------------------
+# Commands
+# --------------------------------------------------------------------------
+
+cmd_status() {
+  local state revision documents disk
+  state=$(systemctl is-active "$SERVICE_NAME" 2>/dev/null || echo 'inactive')
+  revision=$(git -C "$APP_DIR" rev-parse --short HEAD 2>/dev/null || echo 'unknown')
+  disk=$(du -sh "$DATA_DIR" 2>/dev/null | awk '{print $1}' || echo '?')
+  documents=$(count_documents)
+
+  local color=$C_OK mark=$UI_TICK
+  if [[ $state != 'active' ]]; then
+    color=$C_ERR
+    mark=$UI_CROSS
+  fi
+
+  ui_blank
+  ui_box "$color" "${APP_TITLE:-ClurkPdf}" \
+    "$(printf '%-14s %s%s %s%s' 'Service' "$color" "$mark" "$state" "$C_RESET")" \
+    "$(printf '%-14s %s' 'Address' "$(app_url)")" \
+    "$(printf '%-14s %s' 'Revision' "${revision} (${REPO_BRANCH:-main})")" \
+    "$(printf '%-14s %s' 'Documents' "$documents")" \
+    "$(printf '%-14s %s' 'Data' "${disk} in ${DATA_DIR}")" \
+    "$(printf '%-14s %s' 'Since' "$(service_since)")"
+}
+
+service_since() {
+  local when
+  when=$(systemctl show "$SERVICE_NAME" --property=ActiveEnterTimestamp --value 2>/dev/null || true)
+  printf '%s' "${when:-unknown}"
+}
+
+count_documents() {
+  local url
+  url=$(app_database_url)
+  [[ -n $url ]] || { printf 'unknown'; return 0; }
+  psql_app -Atqc 'SELECT count(*) FROM "Document"' 2>/dev/null || printf 'unknown'
+}
+
+cmd_health() {
+  local body
+  if body=$(curl -fsS -m 5 "http://127.0.0.1:${API_PORT}/api/health" 2>/dev/null); then
+    ui_ok "The API is answering on port ${API_PORT}"
+    ui_dim "    ${body}"
+    return 0
+  fi
+  ui_err "No answer from http://127.0.0.1:${API_PORT}/api/health"
+  ui_dim "    Try: clurkpdf doctor"
+  return 1
+}
+
+# Check every part in turn and report all of them, rather than stopping at the
+# first thing that is broken: when an install misbehaves, the second failure is
+# usually the one that explains the first.
+cmd_doctor() {
+  local problems=0
+
+  ui_section 'Service'
+  if service_active; then
+    ui_ok "${SERVICE_NAME} is running"
+  else
+    ui_err "${SERVICE_NAME} is not running — journalctl -u ${SERVICE_NAME} -n 50"
+    problems=$((problems + 1))
+  fi
+
+  ui_section 'API'
+  if curl -fsS -m 5 "http://127.0.0.1:${API_PORT}/api/health" >/dev/null 2>&1; then
+    ui_ok "Health endpoint answers on port ${API_PORT}"
+  else
+    ui_err "Nothing answers on port ${API_PORT}"
+    problems=$((problems + 1))
+  fi
+
+  ui_section 'Database'
+  local url
+  url=$(app_database_url)
+  if [[ -z $url ]]; then
+    ui_err "No DATABASE_URL in ${APP_DIR}/server/.env"
+    problems=$((problems + 1))
+  elif psql_app -Atqc 'SELECT 1' >/dev/null 2>&1; then
+    ui_ok "Reachable, $(count_documents) document(s) stored"
+  else
+    ui_err 'The connection string in server/.env does not work'
+    problems=$((problems + 1))
+  fi
+
+  ui_section 'Web server'
+  if ! have nginx; then
+    ui_warn 'nginx is not installed (installed with --no-nginx?)'
+  elif nginx -t >/dev/null 2>&1; then
+    ui_ok "Configuration is valid, serving ${APP_DIR}/client/dist"
+    if [[ ! -f "$APP_DIR/client/dist/index.html" ]]; then
+      ui_err 'The browser bundle is missing — run: sudo clurkpdf update --force'
+      problems=$((problems + 1))
+    fi
+  else
+    ui_err 'nginx -t reports an invalid configuration'
+    problems=$((problems + 1))
+  fi
+
+  ui_section 'Storage'
+  local free_mb
+  free_mb=$(df -Pm "$DATA_DIR" 2>/dev/null | awk 'NR==2 {print $4}' || echo 0)
+  if [[ ${free_mb:-0} -ge 500 ]]; then
+    ui_ok "${free_mb}MB free on the uploads volume"
+  else
+    ui_err "Only ${free_mb:-0}MB free on the uploads volume"
+    problems=$((problems + 1))
+  fi
+
+  ui_blank
+  if [[ $problems -eq 0 ]]; then
+    ui_box "$C_OK" 'Healthy' 'Every check passed.'
+  else
+    ui_box "$C_ERR" 'Problems found' \
+      "${problems} check(s) failed. The lines above say which." \
+      '' \
+      "Service log: journalctl -u ${SERVICE_NAME} -n 50"
+    return 1
+  fi
+}
+
+cmd_logs() {
+  local -a args=(-u "$SERVICE_NAME" --no-pager -n 100)
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      -f|--follow) args=(-u "$SERVICE_NAME" -f) ;;
+      -n) args+=(-n "${2:-100}"); shift ;;
+      *) args+=("$1") ;;
+    esac
+    shift
+  done
+  journalctl "${args[@]}"
+}
+
+cmd_backup() {
+  require_root 'clurkpdf backup'
+  local dir="$DATA_DIR/backups" stamp file
+  install -d -o "$APP_USER" -g "$APP_USER" -m 750 "$dir"
+  stamp=$(date -u '+%Y%m%d-%H%M%S')
+  file="${dir}/${DB_NAME:-clurkpdf}-${stamp}.sql.gz"
+
+  ui_info 'Dumping the database...'
+  if [[ ${DB_LOCAL:-0} == 1 ]]; then
+    runuser -u postgres -- pg_dump --no-owner "${DB_NAME:-clurkpdf}" | gzip -9 >"$file"
+  else
+    pg_dump_app | gzip -9 >"$file"
+  fi
+  chown "$APP_USER:$APP_USER" "$file"
+  chmod 640 "$file"
+
+  ui_ok "Wrote ${file} ($(du -h "$file" | awk '{print $1}'))"
+  ui_dim "    Restore with: gunzip -c ${file} | sudo -u postgres psql ${DB_NAME:-clurkpdf}"
+  ui_dim "    Uploaded PDFs are not in this dump; they live in ${DATA_DIR}/uploads"
+}
+
+cmd_config() {
+  require_root 'clurkpdf config'
+  ui_section "${APP_DIR}/server/.env"
+  # The connection string carries the database password.
+  sed -E 's|(DATABASE_URL=.*://[^:]*:)[^@]*@|\1***@|' "$APP_DIR/server/.env" \
+    | grep -Ev '^\s*(#|$)' | while IFS= read -r line; do ui_say "$line"; done || true
+  ui_blank
+  ui_dim "    Edit that file, then: sudo systemctl restart ${SERVICE_NAME}"
+}
+
+cmd_db() {
+  require_root 'clurkpdf db'
+  local url
+  url=$(app_database_url)
+  [[ -n $url ]] || { ui_err 'No DATABASE_URL in server/.env'; return 1; }
+  exec psql "$(libpq_url "$url")"
+}
+
+cmd_version() {
+  local revision
+  revision=$(git -C "$APP_DIR" rev-parse --short HEAD 2>/dev/null || echo 'unknown')
+  ui_kv 'clurkpdf command' "$CLI_VERSION"
+  ui_kv 'Installed by' "${INSTALLER_VERSION:-unknown}"
+  ui_kv 'Revision' "${revision} (${REPO_BRANCH:-main})"
+  ui_kv 'Node.js' "$(node -v 2>/dev/null || echo 'not found')"
+}
+
+# --------------------------------------------------------------------------
+# main
+# --------------------------------------------------------------------------
+
+main() {
+  ui_init
+  ui_open_input
+
+  local command=${1:-status}
+  [[ $# -gt 0 ]] && shift
+
+  case $command in
+    -h|--help|help) usage; exit 0 ;;
+  esac
+
+  load_install_conf
+
+  case $command in
+    status)    cmd_status ;;
+    health)    cmd_health ;;
+    doctor)    cmd_doctor ;;
+    logs)      cmd_logs "$@" ;;
+    start)     require_root 'clurkpdf start';   systemctl start "$SERVICE_NAME";   cmd_status ;;
+    stop)      require_root 'clurkpdf stop';    systemctl stop "$SERVICE_NAME";    ui_ok "${SERVICE_NAME} stopped" ;;
+    restart)   require_root 'clurkpdf restart'; systemctl restart "$SERVICE_NAME"; cmd_status ;;
+    update)    require_root 'clurkpdf update';    exec "${DEPLOY_DIR}/update.sh" "$@" ;;
+    uninstall) require_root 'clurkpdf uninstall'; exec "${DEPLOY_DIR}/uninstall.sh" "$@" ;;
+    backup)    cmd_backup ;;
+    config)    cmd_config ;;
+    db)        cmd_db ;;
+    version|--version|-V) cmd_version ;;
+    *)
+      ui_err "Unknown command: ${command}"
+      ui_blank
+      usage
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

@@ -6,6 +6,9 @@ dist/
 .env.local
 .env.*.local
 
+# Written into the deployed checkout by deploy/install.sh.
+.env.production
+
 # Uploaded PDFs and rendered page images.
 server/uploads/
 uploads/

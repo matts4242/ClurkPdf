@@ -51,6 +51,7 @@ client/     React 19 + TypeScript + Vite + Tailwind front end
 server/     Express + TypeScript API
   prisma/   Schema and migrations
   uploads/  Uploaded PDFs and rendered page images (gitignored)
+deploy/     One-command VPS installer and its companions
 scripts/    Database bootstrap for docker-compose
 Project_Overview/  The week-by-week build specification
 ```
@@ -98,7 +99,37 @@ them; every value there is already the built-in default.
 
 The client reads `VITE_SERVER_ORIGIN`, defaulting to `http://localhost:3001`,
 and `VITE_PAGE_DPI`, which must match the server's `PAGE_DPI` so that 100% zoom
-shows the page at its true size.
+shows the page at its true size. Setting `VITE_SERVER_ORIGIN` to an empty
+string makes every request relative, which is what a deployment behind one
+reverse proxy wants.
+
+## Deployment
+
+One command on a fresh Ubuntu, Debian, Rocky, Alma or Fedora server:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/matts4242/ClurkPdf/main/deploy/install.sh | sudo bash
+```
+
+The installer interviews you, shows the plan, and then installs Node.js 22,
+PostgreSQL, the built application under its own service account, an nginx
+reverse proxy, a systemd unit, a Let's Encrypt certificate and a firewall.
+Uploads live in `/var/lib/clurkpdf`, outside the application directory, so
+re-running it is an upgrade rather than a reset.
+
+Afterwards the deployment is managed with one command:
+
+```bash
+clurkpdf status          # service state, revision, document count
+clurkpdf doctor          # check every moving part and say what is wrong
+sudo clurkpdf update     # pull, rebuild, migrate, restart
+sudo clurkpdf backup
+```
+
+Unattended installs, installing from a checkout, installing against a database
+you already have, and what to do when something goes wrong are all covered in
+[`deploy/README.md`](./deploy/README.md). `./deploy/install.sh --dry-run --yes`
+prints every step it would take without touching the machine.
 
 ## API
 
