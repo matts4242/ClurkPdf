@@ -25,6 +25,11 @@ beforeAll(async () => {
   if (address === null || typeof address === 'string') throw new Error('no port assigned');
   baseUrl = `http://127.0.0.1:${address.port}`;
 
+  // Week 5: uploading only queues the document. Run a worker here too, the
+  // same way `npm run dev` does, so an upload still reaches `ready`.
+  const { startWorker } = await import('../queue/documentQueue.js');
+  startWorker();
+
   close = () =>
     new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),
@@ -46,16 +51,18 @@ async function upload(
   return { status: response.status, body: (await response.json()) as ApiResponse<Document> };
 }
 
-/** Poll the document until it leaves `processing`. */
-async function waitForStatus(id: string, attempts = 40): Promise<Document> {
+/** Poll the document until the queue has finished with it. */
+async function waitForStatus(id: string, attempts = 100): Promise<Document> {
   for (let i = 0; i < attempts; i++) {
     const response = await fetch(`${baseUrl}/api/documents/${id}`);
     const body = (await response.json()) as ApiResponse<Document>;
     const document = body.data;
-    if (document && document.status !== 'processing') return document;
+    if (document && document.status !== 'processing' && document.status !== 'queued') {
+      return document;
+    }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error(`document ${id} never left processing`);
+  throw new Error(`document ${id} was never processed`);
 }
 
 describe('POST /api/documents/upload', () => {
@@ -65,11 +72,14 @@ describe('POST /api/documents/upload', () => {
     expect(status).toBe(201);
     expect(body.success).toBe(true);
     expect(body.data?.pageCount).toBe(3);
-    expect(body.data?.status).toBe('processing');
+    // Week 5: the upload hands the document to the queue rather than
+    // rendering it inline, so it comes back waiting rather than working.
+    expect(body.data?.status).toBe('queued');
+    expect(body.data?.progress).toBe(0);
     expect(body.data?.id).toMatch(/^[0-9a-f-]{36}$/);
   });
 
-  it('renders page 1 in the background and becomes ready', async () => {
+  it('renders page 1 on the queue and becomes ready', async () => {
     const { body } = await upload(buildPdf(['Only page']));
     const id = body.data!.id;
 
@@ -135,14 +145,17 @@ describe('GET /api/documents/:id', () => {
 
 describe('GET /api/documents/:id/pages/:pageNumber', () => {
   it('renders a page on demand and caches it to disk', async () => {
-    const { body } = await upload(buildPdf(['First', 'Second']));
+    // Longer than EAGER_RENDER_PAGES, so page 5 is left for this request to
+    // render. The queue deliberately does not render a whole document up
+    // front; see `processingService.renderPages`.
+    const { body } = await upload(buildPdf(['1', '2', '3', '4', '5']));
     const id = body.data!.id;
     await waitForStatus(id);
 
-    const pagePath = path.join(uploadsDir, id, 'pages', '2.png');
+    const pagePath = path.join(uploadsDir, id, 'pages', '5.png');
     await expect(fs.stat(pagePath)).rejects.toThrow();
 
-    const response = await fetch(`${baseUrl}/api/documents/${id}/pages/2`);
+    const response = await fetch(`${baseUrl}/api/documents/${id}/pages/5`);
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toContain('image/png');
 
@@ -150,6 +163,19 @@ describe('GET /api/documents/:id/pages/:pageNumber', () => {
     // PNG magic number.
     expect(bytes.subarray(0, 4)).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
     expect((await fs.stat(pagePath)).size).toBe(bytes.length);
+  });
+
+  it('pre-renders the first few pages on the queue', async () => {
+    const { body } = await upload(buildPdf(['1', '2', '3', '4', '5']));
+    const id = body.data!.id;
+    await waitForStatus(id);
+
+    // The default is three; the fourth waits for someone to ask for it.
+    for (const pageNumber of [1, 2, 3]) {
+      const page = await fs.stat(path.join(uploadsDir, id, 'pages', `${pageNumber}.png`));
+      expect(page.size).toBeGreaterThan(0);
+    }
+    await expect(fs.stat(path.join(uploadsDir, id, 'pages', '4.png'))).rejects.toThrow();
   });
 
   it('returns 404 for a page past the end of the document', async () => {

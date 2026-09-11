@@ -10,11 +10,13 @@ const SERVER_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
  * `migrate deploy` applies committed migrations without prompting, which is
  * what both CI and a developer's first run need.
  */
-export default function setup(): void {
+export default async function setup(): Promise<void> {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
     throw new Error('DATABASE_URL is not set for the test run');
   }
+
+  await assertRedisReachable();
 
   try {
     execFileSync('npx', ['prisma', 'migrate', 'deploy'], {
@@ -33,6 +35,39 @@ export default function setup(): void {
         `  ${redact(databaseUrl)}\n` +
         `Start one with: docker compose up -d\n\n${detail}`,
     );
+  }
+}
+
+/**
+ * Fail fast, and with the fix, when Redis is missing.
+ *
+ * Week 5 made the queue a hard dependency, so without Redis every upload test
+ * would otherwise hang until its timeout and report something unhelpful.
+ */
+async function assertRedisReachable(): Promise<void> {
+  const redisUrl = process.env.REDIS_URL ?? 'redis://127.0.0.1:6379';
+  const { Redis } = await import('ioredis');
+
+  const probe = new Redis(redisUrl, {
+    lazyConnect: true,
+    retryStrategy: () => null,
+    maxRetriesPerRequest: 1,
+    connectTimeout: 3_000,
+  });
+  probe.on('error', () => undefined);
+
+  try {
+    await probe.connect();
+    await probe.ping();
+  } catch (error) {
+    throw new Error(
+      `Could not reach Redis at ${redisUrl}, which the processing queue needs.\n` +
+        `Start one with: docker compose up -d\n\n${
+          error instanceof Error ? error.message : String(error)
+        }`,
+    );
+  } finally {
+    probe.disconnect();
   }
 }
 

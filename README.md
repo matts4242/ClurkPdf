@@ -4,16 +4,21 @@ A browser-based tool for digitising paper and PDF invoices. Accounting teams
 upload a batch, mark up the fields they care about, and export structured data.
 
 The build follows the seven-week plan in [`Project_Overview/`](./Project_Overview),
-one vertical slice at a time. **Weeks 1 to 4 are implemented: upload a PDF,
-view it rendered in the browser, mark up the fields you care about — either by
-drawing regions and running OCR, or by highlighting the document's own text —
-and edit the results.** Weeks 5 to 7 add batch queueing, templates, and export.
+one vertical slice at a time. **Weeks 1 to 5 are implemented: drop a batch of
+PDFs, watch a real queue work through them while the fields each invoice
+declares are filled in automatically, then correct what it found — or mark up
+anything it missed by drawing regions and running OCR, or by highlighting the
+document's own text.** Weeks 6 and 7 add templates and export.
 
 ## Requirements
 
 - Node.js 22.13 or newer (developed on 22.22; CI covers 22.x and 24.x)
 - npm 10 or newer
 - PostgreSQL 14 or newer — `docker compose up -d` provides one
+- Redis 6 or newer — the same `docker compose up -d` provides one
+
+Redis is not optional. Week 5 moved processing onto a queue, so without it the
+API refuses to start rather than accepting uploads that nothing would render.
 
 The Node floor comes from `pdfjs-dist`, which requires 22.13. Node 20 cannot
 run this project. PDF rendering needs no system packages; it runs entirely on
@@ -22,7 +27,7 @@ prebuilt npm packages.
 ## Setup
 
 ```bash
-docker compose up -d          # PostgreSQL on :5432, dev and test databases
+docker compose up -d          # PostgreSQL on :5432, Redis on :6379
 cp server/.env.example server/.env
 npm install                   # root, server, and client dependencies
 npm run db:migrate            # create the schema
@@ -35,14 +40,18 @@ Then open <http://localhost:5173>.
 
 ```
 Server      http://localhost:3001
+WebSocket   ws://localhost:3001/ws
 Client      http://localhost:5173
 Uploads     <repo>/server/uploads
 Database    postgresql://invoice:***@127.0.0.1:5432/invoice_processor
+Queue       redis://127.0.0.1:6379 (3 at a time)
 ```
 
-Already have PostgreSQL? Skip `docker compose` and point `DATABASE_URL` and
-`TEST_DATABASE_URL` in `server/.env` at your own server. The test database must
-exist and its name must end in `_test`.
+Already have PostgreSQL or Redis? Skip `docker compose` and point
+`DATABASE_URL`, `TEST_DATABASE_URL` and `REDIS_URL` in `server/.env` at your
+own servers. The test database must exist and its name must end in `_test`.
+The test suite namespaces its queue keys under a random prefix per run, so it
+can share a Redis with development without ever seeing its jobs.
 
 ## Layout
 
@@ -50,6 +59,8 @@ exist and its name must end in `_test`.
 client/     React 19 + TypeScript + Vite + Tailwind front end
 server/     Express + TypeScript API
   prisma/   Schema and migrations
+  src/queue/   BullMQ queue, worker, and Redis connections
+  src/events/  Progress event bus and the WebSocket endpoint
   uploads/  Uploaded PDFs and rendered page images (gitignored)
 deploy/     One-command VPS installer and its companions
 scripts/    Database bootstrap for docker-compose
@@ -96,6 +107,13 @@ them; every value there is already the built-in default.
 | `OCR_CONCURRENCY` | `2` | Regions recognised at once |
 | `OCR_TIMEOUT_MS` | `30000` | Give up on one region after this long |
 | `OCR_MIN_CROP_WIDTH` | `1000` | Narrower crops are upscaled before recognition |
+| `REDIS_URL` | `redis://127.0.0.1:6379` | Processing queue and progress events |
+| `QUEUE_PREFIX` | `invoice` | Namespace for this deployment's queue keys |
+| `QUEUE_CONCURRENCY` | `3` | Documents processed at once |
+| `QUEUE_ATTEMPTS` | `3` | Retries before a document is left failed |
+| `QUEUE_JOB_TIMEOUT_MS` | `300000` | A job whose process died returns to the queue after this |
+| `EAGER_RENDER_PAGES` | `3` | Pages rendered up front; the rest render on demand |
+| `WS_HEARTBEAT_MS` | `30000` | How often idle WebSocket clients are pinged |
 
 The client reads `VITE_SERVER_ORIGIN`, defaulting to `http://localhost:3001`,
 and `VITE_PAGE_DPI`, which must match the server's `PAGE_DPI` so that 100% zoom
@@ -112,8 +130,9 @@ curl -fsSL https://raw.githubusercontent.com/matts4242/ClurkPdf/main/deploy/inst
 ```
 
 The installer interviews you, shows the plan, and then installs Node.js 22,
-PostgreSQL, the built application under its own service account, an nginx
-reverse proxy, a systemd unit, a Let's Encrypt certificate and a firewall.
+PostgreSQL, Redis, the built application under its own service account, an
+nginx reverse proxy, a systemd unit, a Let's Encrypt certificate and a
+firewall.
 Uploads live in `/var/lib/clurkpdf`, outside the application directory, so
 re-running it is an upgrade rather than a reset.
 
@@ -142,6 +161,10 @@ Every endpoint answers with the same envelope, success or failure.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
+| `POST` | `/api/batches` | Open a batch to upload into |
+| `GET` | `/api/batches` | List batches, newest first, with their progress |
+| `GET` | `/api/batches/:id` | One batch, its pipeline counts, and its documents |
+| `DELETE` | `/api/batches/:id` | Delete a batch and everything uploaded into it |
 | `POST` | `/api/documents/upload` | Upload one PDF as `multipart/form-data` under the field `file` |
 | `GET` | `/api/documents` | List stored documents, newest first |
 | `GET` | `/api/documents/:id` | Document metadata |
@@ -154,16 +177,21 @@ Every endpoint answers with the same envelope, success or failure.
 | `DELETE` | `/api/documents/:id/regions/:regionId` | Delete a region |
 | `POST` | `/api/documents/:id/ocr` | Read the text inside the document's regions |
 | `GET` | `/api/documents/:id/text-layer/:n` | The page's own text, with positions |
-| `GET` | `/api/health` | Liveness check |
+| `GET` | `/api/health` | Liveness check, plus the number of connected watchers |
+| `WS` | `/ws` | Live processing progress; `?batchId=` to filter to one upload |
 
 `GET /api/documents/:id` also returns `regionCount` and `pagesWithRegions`.
+
+The upload accepts an optional `batchId` field beside the file. It must be
+appended to the form **before** the file, because multer only exposes fields
+that arrive ahead of it in the multipart stream.
 
 Error codes: `FILE_TOO_LARGE` (413), `INVALID_FILE_TYPE` (415),
 `NO_FILE_UPLOADED` (400), `INVALID_PDF` (422), `INVALID_REQUEST` (400),
 `DOCUMENT_NOT_FOUND` (404), `PAGE_NOT_FOUND` (404), `FORBIDDEN` (403),
 `PROCESSING_ERROR` (500), `INTERNAL_ERROR` (500), `REGION_NOT_FOUND` (404),
 `REGION_OUT_OF_BOUNDS` (400), `INVALID_DIMENSIONS` (400), `INVALID_PAGE` (400),
-`INVALID_FIELD_TYPE` (400).
+`INVALID_FIELD_TYPE` (400), `BATCH_NOT_FOUND` (404), `QUEUE_UNAVAILABLE` (503).
 
 ### OCR
 
@@ -243,33 +271,127 @@ validates the rectangle *after* the merge, so sending only a wider `width`
 cannot push a region off the page. A region id is always looked up together
 with its document id, so one document's URL can never reach another's regions.
 
+### Batches and the processing queue
+
+A batch is the unit a bulk upload is tracked against. The client opens one
+first, then uploads into it — created up front rather than inferred from the
+first file, so a drop of fifty PDFs sent in parallel all land in one batch.
+
+```jsonc
+{ "batch": { "id": "...", "name": "3 files · 14:05", "status": "complete",
+             "documentCount": 3, "progress": 100, "detectedFieldCount": 14,
+             "counts": { "queued": 0, "processing": 0, "ready": 3, "error": 0 },
+             "documents": [ ] } }
+```
+
+`status` is `complete` once every document has settled, **whether or not each
+one succeeded** — "finished with two failures" is a normal outcome, and the
+per-document statuses carry that detail rather than a fourth batch state trying
+to summarise it. Progress is derived from the documents on every read rather
+than kept as a counter, because a counter maintained by three concurrent
+workers is a race.
+
 ### Upload lifecycle
 
-The upload responds as soon as the PDF is stored and parsed, with
-`status: "processing"`. Page 1 renders in the background and the status becomes
-`ready`. The client polls `GET /api/documents/:id` with exponential backoff,
-starting at 500ms and capping at 5s.
+The upload stores and parses the PDF, hands it to the queue, and responds
+immediately with `status: "queued"`. A worker picks it up, and only
+`QUEUE_CONCURRENCY` documents are ever being processed however fast the uploads
+arrive. The job renders the first `EAGER_RENDER_PAGES` pages plus the
+thumbnail, reads the fields the document declares, and marks it `ready`.
+
+Not every page, deliberately: a 200-page PDF would hold a worker for minutes
+while the rest of a batch waited, and the viewer renders any page it is asked
+for on demand anyway. The thumbnail is written as soon as page 1 exists rather
+than at the end of the job, so a card in the grid can show its document while
+the rest of it is still rendering.
 
 A PDF that will not parse is rejected synchronously with `INVALID_PDF` and
-nothing is written to disk. A PDF that parses but fails to render leaves the
-document at `status: "error"` with a message, since the upload itself succeeded.
+nothing is written to disk. A PDF that parses but fails to render is retried
+`QUEUE_ATTEMPTS` times and then left at `status: "error"` with a message —
+except for failures that are properties of the file rather than the moment
+(`INVALID_PDF`, `PAGE_NOT_FOUND`), which fail immediately rather than making
+the user wait out a backoff to see the same error.
+
+**A restart no longer loses work.** Weeks 1 to 4 could only mark a document
+stranded mid-render as failed, because nothing was going to finish it. Now it
+is returned to `queued` at startup and re-enqueued, which is the main thing the
+queue buys.
+
+### Live progress
+
+`/ws` pushes a `ProcessingEvent` as the queue works. Connect with `?batchId=`
+to hear about one upload, or without it to hear everything.
+
+```jsonc
+{ "type": "document.progress", "batchId": "...", "documentId": "...", "progress": 80 }
+{ "type": "document.ready",    "batchId": "...", "document": { }, "detectedFields": 7 }
+{ "type": "batch.complete",    "batchId": "...", "batch": { } }
+```
+
+Events travel over Redis pub/sub rather than an in-process emitter, so a
+browser connected to one process still hears about a document a *different*
+worker process rendered — which is the point of having a queue at all.
+
+**The socket is the live channel, not the record.** A drop is a reconnect with
+exponential backoff plus a refetch of the REST endpoints, rather than a second
+code path trying to reconstruct what was missed. On the client the events are
+folded by a pure function that ignores a progress frame overtaken by the
+completion it precedes, refuses to reopen a document the queue has finished,
+and ignores events about documents it has never seen.
+
+### Automatic field detection
+
+A born-digital invoice already says where its own values are, so the processing
+job pre-fills them. It reads page 1's text layer and looks for labelled fields
+— `Invoice No`, `Due Date`, `Amount Due`, `Subtotal`, `VAT` — matching either
+`Label: value` on one line, a value in a second column, or a value on the line
+below a bare heading. The vendor is the one positional guess: the largest text
+in the top quarter of the page that is not boilerplate, which is why it reports
+50% confidence where a labelled match reports 90.
+
+Each detection becomes an ordinary `Region` with `textSource: "TEXT_LAYER"`,
+so the sidebar, the correction panel and Week 7's export need no second path.
+What marks it out is `autoDetected: true`: the sidebar shows it with a marker
+and the canvas draws it dashed, because a regex guess deserves a glance in a
+way a deliberate highlight does not. **Editing one clears the flag** — that
+edit is the review it was asking for.
+
+Only page 1, and at most one region per field type: a document has one invoice
+number, and offering three candidates would be worse than offering the best one
+and letting the user redraw it. A scanned page has no text layer and gets
+nothing from here; OCR remains the path for those.
+
+### Duplicate detection
+
+The upload hashes the bytes and reports `duplicateOf` when an earlier document
+holds the same SHA-256. It is a warning, not a refusal — re-uploading an
+invoice is a legitimate thing to do, and only the user knows whether this one
+is a mistake — so the file is queued and processed like any other.
 
 ## Testing
 
 ```bash
-npm test               # 95 tests
+npm test               # 158 tests
 ```
 
-- **Server (80)** — HTTP endpoints, PDF rendering, region validation and
-  ownership, OCR, text-layer extraction and snapping, cascade deletes, and
-  path-traversal defences. Each test runs against a real server on an ephemeral
-  port and a real database.
-- **Client (15)** — the coordinate maths, including that a region covers the
-  same content at every zoom level.
+- **Server (125)** — HTTP endpoints, PDF rendering, region validation and
+  ownership, OCR, text-layer extraction and snapping, batches, the processing
+  queue, field detection, duplicate detection, WebSocket progress, restart
+  recovery, cascade deletes, and path-traversal defences. Each test runs
+  against a real server on an ephemeral port, a real database, and a real
+  Redis.
+- **Client (33)** — the coordinate maths, including that a region covers the
+  same content at every zoom level, and the processing-event fold.
 
 The OCR tests run Tesseract for real against a generated invoice whose text the
 fixture chooses, so recognition is measured rather than stubbed. The first run
 downloads the language data; CI caches it.
+
+The queue tests are likewise unmocked: they start the same BullMQ worker that
+`npm run dev` runs, against the same Redis, and wait for it to drain. A job
+that would deadlock or never report progress in production does so here too —
+which is how the `jobId` deduplication was caught silently swallowing the
+re-enqueue of a document being recovered after a restart.
 
 The server suite starts from an empty schema: migrations are applied once, then
 every test truncates. Two guards keep that away from real data. `DATABASE_URL`
@@ -277,12 +399,50 @@ is set explicitly for the run, and `process.loadEnvFile` never overrides an
 already-set variable, so `server/.env` cannot redirect a test run onto the
 development database. On top of that the suite refuses to start unless the
 database name ends in `_test`. The uploads root is likewise a fresh temp
-directory per run, so `server/uploads` is never touched.
+directory per run, so `server/uploads` is never touched, and each test file
+gets its own random `QUEUE_PREFIX` so a run can never drain a development
+queue or see another file's jobs.
 
 Test PDFs are generated byte-by-byte in `server/src/test/fixtures.ts`, so no
 binary fixtures are stored in the repository.
 
 ## Notes on the specification
+
+### Week 5
+
+- **BullMQ rather than the Bull the plan named.** Bull 4 is in maintenance;
+  BullMQ is its successor from the same author, with the same Redis-backed
+  model and first-class TypeScript types.
+- **Redis became a hard dependency, deliberately.** The server pings it at
+  startup and refuses to run without it. An in-process fallback would mean two
+  code paths to keep honest and a production behaviour no test exercises; a
+  server that silently accepts uploads nothing will ever render is worse than
+  one that will not start.
+- **Progress events go over Redis pub/sub, not an EventEmitter.** An emitter
+  would be enough while the worker shares a process with the API, but the point
+  of the queue is that it need not — a second worker must still be able to push
+  progress to a browser connected to the first.
+- **Uploads are parallel, not serial.** Week 1 sent files one at a time because
+  each upload also waited out the rendering. Now the server only stores and
+  queues, so the transfers are the whole wait; a pool of three runs them
+  without a fifty-file drop opening fifty sockets.
+- **The batch names itself from a count the client supplies.** The batch is
+  opened before a single file has been sent, so the server has nothing to
+  count. Told nothing, it names itself after the time alone rather than
+  claiming "0 files".
+- **Field detection is regex over labels, not a model**, and it writes ordinary
+  regions rather than a new entity — the same choice Week 4 made about
+  highlights, for the same reason. Where a label and its value share one text
+  run, the highlight box is narrowed within the run by character count. That
+  assumes an even advance width and is therefore slightly wrong for a
+  proportional font, but it is used to draw a box, not to read text: the value
+  itself comes from the regex.
+- **Duplicates warn rather than block.** The spec asks for a "visual warning",
+  and re-uploading an invoice on purpose is legitimate.
+- **Deleting a batch is explicit, not a cascade.** `Document.batchId` is
+  `SetNull`, so removing a batch row cannot silently take documents with it;
+  `DELETE /api/batches/:id` removes them deliberately, one at a time, because
+  each owns files on disk the database knows nothing about.
 
 ### Week 4
 

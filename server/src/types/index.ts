@@ -37,15 +37,29 @@ export const ERROR_CODES = [
   'INVALID_DIMENSIONS',
   'INVALID_PAGE',
   'INVALID_FIELD_TYPE',
+  // Week 5: batches and the processing queue
+  'BATCH_NOT_FOUND',
+  'QUEUE_UNAVAILABLE',
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
-export type DocumentStatus = 'uploaded' | 'processing' | 'ready' | 'error';
+/**
+ * Where a document sits in the pipeline.
+ *
+ * Week 5 replaces Week 1's `uploaded` with `queued`: the upload endpoint no
+ * longer does the rendering itself, it hands the document to the queue, so
+ * "stored but not yet picked up" is now a real state a client can observe.
+ */
+export type DocumentStatus = 'queued' | 'processing' | 'ready' | 'error';
+
+export const DOCUMENT_STATUSES = ['queued', 'processing', 'ready', 'error'] as const;
 
 export interface Document {
   /** UUID v4. */
   id: string;
+  /** The upload this document arrived with. Null once its batch is deleted. */
+  batchId?: string;
   /** Sanitized name as stored on disk. */
   filename: string;
   /** Name exactly as the browser reported it. */
@@ -59,10 +73,20 @@ export interface Document {
   /** ISO 8601 timestamp. */
   createdAt: string;
   status: DocumentStatus;
+  /** How far processing has got, 0-100. */
+  progress: number;
   /** URL of the page-1 preview image. Present once the page has rendered. */
   thumbnailUrl?: string;
   /** Populated when `status` is `error`. */
   errorMessage?: string;
+  /**
+   * SHA-256 of the uploaded bytes. Two documents sharing one are the same
+   * file uploaded twice; the client warns rather than refusing, because
+   * re-uploading an invoice deliberately is legitimate.
+   */
+  contentHash?: string;
+  /** Id of an earlier document with the same bytes, when there is one. */
+  duplicateOf?: string;
 }
 
 /** A document plus a summary of the regions drawn on it. */
@@ -123,6 +147,8 @@ export interface Region {
   /** Why the last attempt failed, when `ocrStatus` is `ERROR`. */
   ocrError?: string;
   ocrAt?: string;
+  /** Week 5: the processing job found this field rather than a person marking it. */
+  autoDetected: boolean;
 
   createdAt: string;
   updatedAt: string;
@@ -213,4 +239,80 @@ export interface UpdateRegionRequest {
 export interface ListRegionsResponse {
   regions: Region[];
   total: number;
+}
+
+// ---------------------------------------------------------------------------
+// Week 5: batches, the processing queue, and live progress
+// ---------------------------------------------------------------------------
+
+/**
+ * A batch is `processing` until every document in it has settled, then
+ * `complete` — whether or not each document succeeded. "Complete with two
+ * failures" is a real and common outcome, so the per-document statuses carry
+ * that detail rather than a fourth batch state trying to summarise it.
+ */
+export type BatchStatus = 'queued' | 'processing' | 'complete';
+
+export interface Batch {
+  id: string;
+  name: string;
+  status: BatchStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A batch plus the pipeline counts the progress bar is drawn from. */
+export interface BatchWithProgress extends Batch {
+  documentCount: number;
+  /** Documents in each stage. The four always sum to `documentCount`. */
+  counts: Record<DocumentStatus, number>;
+  /** Mean of the documents' own progress, 0-100. */
+  progress: number;
+  /** Regions the processing jobs detected across the whole batch. */
+  detectedFieldCount: number;
+}
+
+export interface BatchWithDocuments extends BatchWithProgress {
+  documents: Document[];
+}
+
+export interface CreateBatchRequest {
+  /** Omit to have the server name it after `fileCount` and the time of day. */
+  name?: string;
+  /**
+   * How many files are about to be uploaded into it.
+   *
+   * Only used to name an unnamed batch, and nothing is held to it — the batch
+   * is opened before the uploads start, so this is the only moment the count
+   * is known at all, and a file that fails to send simply never arrives.
+   */
+  fileCount?: number;
+}
+
+/**
+ * Events pushed over the WebSocket as the queue works.
+ *
+ * Every event names the batch so a client watching one upload can ignore
+ * another tab's. `document.progress` is the chatty one; the rest are
+ * transitions.
+ */
+export type ProcessingEvent =
+  | { type: 'document.queued'; batchId: string | null; document: Document }
+  | { type: 'document.progress'; batchId: string | null; documentId: string; progress: number }
+  | { type: 'document.ready'; batchId: string | null; document: Document; detectedFields: number }
+  | { type: 'document.error'; batchId: string | null; documentId: string; message: string }
+  | { type: 'batch.progress'; batchId: string; batch: BatchWithProgress }
+  | { type: 'batch.complete'; batchId: string; batch: BatchWithProgress };
+
+export type ProcessingEventType = ProcessingEvent['type'];
+
+/** One field the processing job found by itself. */
+export interface DetectedField {
+  fieldType: FieldType;
+  /** The value as parsed out of the line, e.g. `INV-2026-0042`. */
+  value: string;
+  pageNumber: number;
+  rect: NormalizedRect;
+  /** 0-100. A labelled match scores higher than a positional guess. */
+  confidence: number;
 }

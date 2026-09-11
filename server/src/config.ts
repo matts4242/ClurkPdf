@@ -72,6 +72,44 @@ export const config = {
    */
   ocrMinCropWidth: int(process.env.OCR_MIN_CROP_WIDTH, 1000),
 
+  // --- Week 5: queue and live progress ---
+
+  /** Redis connection for the processing queue. Required; BullMQ has no other backend. */
+  redisUrl: process.env.REDIS_URL ?? 'redis://127.0.0.1:6379',
+
+  /**
+   * Namespace for this deployment's queue keys.
+   *
+   * Tests set it per run so a suite never drains a developer's development
+   * queue, and two apps can share one Redis.
+   */
+  queuePrefix: process.env.QUEUE_PREFIX ?? 'invoice',
+
+  /**
+   * How many documents are processed at once.
+   *
+   * Rendering a page holds a pdf.js document and a full-page canvas, so this
+   * is the memory ceiling for a batch: the spec's 50-file upload arrives all
+   * at once but only this many are ever in flight.
+   */
+  queueConcurrency: int(process.env.QUEUE_CONCURRENCY, 3),
+
+  /** How many times a failed processing job is retried before it stays failed. */
+  queueAttempts: int(process.env.QUEUE_ATTEMPTS, 3),
+
+  /** Give up on a single document after this long. */
+  queueJobTimeoutMs: int(process.env.QUEUE_JOB_TIMEOUT_MS, 5 * 60_000),
+
+  /**
+   * Pages rendered eagerly by the processing job. The rest render on demand
+   * when the viewer asks for them, which keeps a 200-page PDF from monopolising
+   * a worker while 49 other files wait.
+   */
+  eagerRenderPages: int(process.env.EAGER_RENDER_PAGES, 3),
+
+  /** How often the WebSocket server pings idle clients to prune dead sockets. */
+  wsHeartbeatMs: int(process.env.WS_HEARTBEAT_MS, 30_000),
+
   isProduction: process.env.NODE_ENV === 'production',
 
   /** Suppresses request logging so the test output stays readable. */

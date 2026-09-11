@@ -50,10 +50,13 @@ MAX_UPLOAD_MB=${CLURK_MAX_UPLOAD_MB:-10}
 PAGE_DPI=${CLURK_PAGE_DPI:-150}
 OCR_LANGUAGE=${CLURK_OCR_LANGUAGE:-eng}
 OCR_CONCURRENCY=${CLURK_OCR_CONCURRENCY:-}
+QUEUE_CONCURRENCY=${CLURK_QUEUE_CONCURRENCY:-}
 DATABASE_URL=${CLURK_DATABASE_URL:-}
 DB_NAME=${CLURK_DB_NAME:-clurkpdf}
 DB_USER=${CLURK_DB_USER:-clurkpdf}
 DB_PASSWORD=''
+# Set by install_redis: Debian calls the unit redis-server, Fedora calls it redis.
+REDIS_UNIT=''
 
 # Behaviour switches.
 ASSUME_YES=0
@@ -126,7 +129,7 @@ OPTIONS
 ENVIRONMENT
   CLURK_DOMAIN, CLURK_EMAIL, CLURK_PORT, CLURK_DATABASE_URL, CLURK_DIR,
   CLURK_DATA_DIR, CLURK_REPO, CLURK_BRANCH, CLURK_MAX_UPLOAD_MB,
-  CLURK_OCR_LANGUAGE, CLURK_OCR_CONCURRENCY, CLURK_LOG
+  CLURK_OCR_LANGUAGE, CLURK_OCR_CONCURRENCY, CLURK_QUEUE_CONCURRENCY, CLURK_LOG
 
   Each is the default for the matching flag, so an unattended install can be
   driven entirely from the environment.
@@ -425,6 +428,11 @@ preflight() {
   if [[ -z $OCR_CONCURRENCY ]]; then
     OCR_CONCURRENCY=$(( cores >= 8 ? 4 : (cores <= 1 ? 1 : cores / 2 + 1) ))
   fi
+  # Rendering is the heavier of the two — a full-page canvas per job — so the
+  # queue runs a little narrower than OCR on the same machine.
+  if [[ -z $QUEUE_CONCURRENCY ]]; then
+    QUEUE_CONCURRENCY=$(( cores >= 8 ? 4 : (cores <= 2 ? 1 : 2) ))
+  fi
 
   if curl -fsS -m 8 -o /dev/null https://registry.npmjs.org/ 2>/dev/null; then
     ui_ok 'Network            registry.npmjs.org reachable'
@@ -585,6 +593,7 @@ show_plan() {
     "$(printf '%-18s %s' 'API port'        "$API_PORT")" \
     "$(printf '%-18s %s' 'Max upload'      "${MAX_UPLOAD_MB}MB")" \
     "$(printf '%-18s %s' 'OCR'             "${OCR_LANGUAGE}, ${OCR_CONCURRENCY} region(s) at a time")" \
+    "$(printf '%-18s %s' 'Queue'           "Redis on this server, ${QUEUE_CONCURRENCY} document(s) at a time")" \
     "$(printf '%-18s %s' 'Firewall'        "$(firewall_summary)")" \
     "$(printf '%-18s %s' 'Source'          "${REPO_BRANCH} of ${LOCAL_SOURCE:-$REPO_URL}")"
 
@@ -606,7 +615,8 @@ firewall_summary() {
 
 # Count the steps up front so the progress bar tells the truth.
 plan_steps() {
-  local total=15
+  # 15 base steps, plus Redis, which Week 5's queue always needs.
+  local total=16
   [[ $DO_SWAP == 1 ]]     && total=$((total + 1))
   [[ $DB_LOCAL == 1 ]]    && total=$((total + 2))
   [[ $DO_NGINX == 1 ]]    && total=$((total + 1))
@@ -743,6 +753,53 @@ provision_database() {
   DATABASE_URL="postgresql://${DB_USER}:${DB_PASSWORD}@127.0.0.1:5432/${DB_NAME}?schema=public"
 }
 
+step_redis() {
+  ui_run 'Installing Redis' install_redis
+}
+
+# Redis backs the processing queue: without it the API accepts uploads and
+# nothing ever renders them, so this is not optional the way nginx is.
+#
+# Bound to the loopback interface only. The queue holds document ids, and
+# anything that can reach it can delete another tenant's jobs; there is no
+# reason for it to be reachable off the box.
+install_redis() {
+  case $PKG in
+    apt) pkg_install redis-server ;;
+    dnf) pkg_install redis ;;
+  esac
+
+  local unit=redis-server
+  systemctl list-unit-files 'redis-server.service' 2>/dev/null | grep -q redis-server || unit=redis
+
+  local conf
+  for conf in /etc/redis/redis.conf /etc/redis.conf; do
+    [[ -f $conf ]] || continue
+    # Persistence off: every job's real state is a row in PostgreSQL, so a
+    # flushed queue costs a re-render, not data. `enqueuePending` at startup
+    # is what puts the work back.
+    sed -i \
+      -e 's/^#\? *bind .*/bind 127.0.0.1 -::1/' \
+      -e 's/^#\? *protected-mode .*/protected-mode yes/' \
+      -e 's/^#\? *appendonly .*/appendonly no/' \
+      "$conf"
+    break
+  done
+
+  systemctl enable --now "$unit"
+
+  local i
+  for i in $(seq 1 30); do
+    if redis-cli ping >/dev/null 2>&1; then
+      REDIS_UNIT=$unit
+      return 0
+    fi
+    sleep 1
+  done
+  echo 'Redis did not accept connections within 30 seconds.' >&2
+  return 1
+}
+
 step_account() {
   ui_run "Creating the ${APP_USER} service account" create_account
 }
@@ -848,6 +905,17 @@ OCR_CACHE_DIR=${DATA_DIR}/tesseract
 OCR_CONCURRENCY=${OCR_CONCURRENCY}
 OCR_TIMEOUT_MS=30000
 OCR_MIN_CROP_WIDTH=1000
+
+# Processing queue. Redis listens on loopback only; see install_redis.
+REDIS_URL=redis://127.0.0.1:6379
+QUEUE_PREFIX=invoice
+# Documents rendered at once. Each holds a full-page canvas, so this is the
+# memory ceiling for a large batch — it is sized from RAM, like OCR_CONCURRENCY.
+QUEUE_CONCURRENCY=${QUEUE_CONCURRENCY}
+QUEUE_ATTEMPTS=3
+QUEUE_JOB_TIMEOUT_MS=300000
+# Pages rendered up front; the rest render when the viewer asks for them.
+EAGER_RENDER_PAGES=3
 EOF
 
     # An empty VITE_SERVER_ORIGIN makes every request relative, so the bundle
@@ -903,7 +971,10 @@ step_service() {
 
 write_service() {
   local after='network-online.target'
-  [[ $DB_LOCAL == 1 ]] && after='network-online.target postgresql.service'
+  [[ $DB_LOCAL == 1 ]] && after="${after} postgresql.service"
+  # The server pings Redis at startup and refuses to run without it, so it must
+  # not be started before the queue is up.
+  after="${after} ${REDIS_UNIT:-redis-server}.service"
 
   # ProtectHome hides /home entirely, which would break a deployment that was
   # deliberately put there.
@@ -1033,6 +1104,22 @@ server {
         # waits three minutes for /ocr. nginx must not give up first.
         proxy_read_timeout 300s;
         proxy_send_timeout 300s;
+    }
+
+    # Live processing progress. An Upgrade header is hop-by-hop, so without
+    # these two lines nginx strips it, the handshake comes back as a plain 200,
+    # and the client falls into a reconnect loop that never succeeds.
+    location /ws {
+        proxy_pass http://127.0.0.1:__PORT__;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # An idle socket between batches must outlive nginx's default minute.
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
     }
 
     # Rendered page images. Proxied rather than served straight from disk on
@@ -1211,6 +1298,7 @@ main() {
   step_base_packages
   step_node
   step_postgres
+  step_redis
   step_account
   step_source
   step_dependencies

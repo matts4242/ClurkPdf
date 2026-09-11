@@ -33,8 +33,8 @@ and then does it. Ten minutes later the app is running behind nginx on port 80
 | Access | root, or a user with `sudo` |
 | Init system | systemd |
 
-Nothing else needs to be installed first. Node.js, PostgreSQL, nginx and
-certbot are all installed by the script if they are missing.
+Nothing else needs to be installed first. Node.js, PostgreSQL, Redis, nginx
+and certbot are all installed by the script if they are missing.
 
 Point the domain's A record at the server **before** running the installer if
 you want a certificate; Let's Encrypt validates over port 80 and cannot issue
@@ -50,18 +50,24 @@ one for a name that does not resolve yet. The installer checks and warns.
 3. Installs PostgreSQL, then creates the `clurkpdf` database and role with a
    generated password. Or skips all of that when you point it at a database you
    already have.
-4. Creates the `clurkpdf` system account. The app never runs as root.
-5. Clones the repository into `/opt/clurkpdf`, installs dependencies, and
+4. Installs Redis, bound to loopback, for the document processing queue. The
+   queue is not optional — without it uploads are accepted and never rendered —
+   so unlike nginx there is no way to skip this step. Persistence is turned
+   off: every job's real state is a row in PostgreSQL, so a flushed queue costs
+   a re-render rather than data, and the server re-queues anything outstanding
+   at startup.
+5. Creates the `clurkpdf` system account. The app never runs as root.
+6. Clones the repository into `/opt/clurkpdf`, installs dependencies, and
    builds both packages.
-6. Writes `server/.env` and `client/.env.production`, then checks that the
+7. Writes `server/.env` and `client/.env.production`, then checks that the
    built bundle really did pick the latter up.
-7. Applies the Prisma migrations.
-8. Installs a hardened systemd unit and enables it at boot.
-9. Configures nginx: the compiled bundle as static files, `/api` and `/uploads`
-   proxied to the API.
-10. Requests a certificate with certbot, when a domain was given.
-11. Opens SSH, HTTP and HTTPS in ufw or firewalld.
-12. Starts the service and waits for `/api/health` to answer.
+8. Applies the Prisma migrations.
+9. Installs a hardened systemd unit and enables it at boot.
+10. Configures nginx: the compiled bundle as static files, `/api` and
+    `/uploads` proxied to the API, and `/ws` upgraded for live progress.
+11. Requests a certificate with certbot, when a domain was given.
+12. Opens SSH, HTTP and HTTPS in ufw or firewalld.
+13. Starts the service and waits for `/api/health` to answer.
 
 Anything the commands print goes to `/var/log/clurkpdf-install.log`, and the
 last 25 lines are shown on screen if a step fails.
@@ -191,8 +197,8 @@ never comes into it. It is there for a client hosted somewhere else.
   port 80 by IP as well as by name. `uninstall.sh` puts it back. On RHEL-family
   systems, where the default server lives in `nginx.conf` itself, the installer
   edits out its `default_server` and keeps a `.clurkpdf.bak` copy.
-- **PostgreSQL, Node.js and nginx survive an uninstall.** They are ordinary
-  system packages that something else on the machine may depend on.
+- **PostgreSQL, Redis, Node.js and nginx survive an uninstall.** They are
+  ordinary system packages that something else on the machine may depend on.
 - **Re-running the installer is an upgrade.** The role's password is reset, the
   source is re-fetched, everything is rebuilt, and uploads are untouched.
 

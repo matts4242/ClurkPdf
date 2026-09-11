@@ -3,7 +3,9 @@ import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import { config } from './config.js';
+import { connectedClients } from './events/wsServer.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
+import { batchesRouter } from './routes/batches.js';
 import { documentsRouter } from './routes/documents.js';
 import { forbidden } from './utils/errors.js';
 
@@ -42,7 +44,15 @@ export function createApp(): Express {
   app.use(express.json({ limit: '1mb' }));
 
   app.get('/api/health', (_req: Request, res: Response) => {
-    res.json({ success: true, data: { status: 'ok', uptime: process.uptime() } });
+    res.json({
+      success: true,
+      data: {
+        status: 'ok',
+        uptime: process.uptime(),
+        // Week 5: enough to tell "nobody is watching" from "nothing is happening".
+        watchers: connectedClients(),
+      },
+    });
   });
 
   // Guard before the static handler: page renders are public, the uploaded
@@ -68,6 +78,7 @@ export function createApp(): Express {
   );
 
   app.use('/api/documents', documentsRouter);
+  app.use('/api/batches', batchesRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);

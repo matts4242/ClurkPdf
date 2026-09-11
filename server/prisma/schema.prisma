@@ -14,25 +14,53 @@ datasource db {
   provider = "postgresql"
 }
 
+/// A group of documents uploaded together and processed as one unit.
+///
+/// Week 5 introduces this. Every upload belongs to a batch, so the queue has
+/// something to report aggregate progress against and the grid has something
+/// to draw. A single-file upload is a batch of one.
+model Batch {
+  id        String     @id @default(uuid()) @db.Uuid
+  /// What the user called it, or a generated name like "3 files, 14:05".
+  name      String
+  /// queued | processing | complete
+  status    String     @default("queued")
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  documents Document[]
+
+  @@index([createdAt])
+}
+
 model Document {
   id           String         @id @default(uuid()) @db.Uuid
+  batchId      String?        @db.Uuid
   filename     String
   originalName String
   mimeType     String
   size         Int
   pageCount    Int
   uploadPath   String
-  /// uploaded | processing | ready | error
+  /// queued | processing | ready | error
   status       String
   thumbnailUrl String?
   errorMessage String?
+  /// SHA-256 of the uploaded bytes, for the duplicate warning.
+  contentHash  String?
+  /// 0-100, how far the processing job has got. Rendering dominates the work,
+  /// so this is driven by pages rendered rather than by job step.
+  progress     Int            @default(0)
   createdAt    DateTime       @default(now())
   updatedAt    DateTime       @updatedAt
 
   regions      Region[]
+  batch        Batch?         @relation(fields: [batchId], references: [id], onDelete: SetNull)
 
   @@index([status])
   @@index([createdAt])
+  @@index([batchId])
+  @@index([contentHash])
 }
 
 model Region {
@@ -66,6 +94,11 @@ model Region {
   ocrError   String?
   /// When OCR last completed for this region.
   ocrAt      DateTime?
+
+  /// True when the processing job found this field by itself rather than a
+  /// person drawing it (Week 5). The UI marks these for review, because a
+  /// regex guess deserves a glance in a way a deliberate highlight does not.
+  autoDetected Boolean @default(false)
 
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
