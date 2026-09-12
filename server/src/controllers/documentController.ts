@@ -1,15 +1,18 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import type { Request, Response } from 'express';
 import { config } from '../config.js';
+import { queueDocument } from '../queue/documentQueue.js';
+import { assertBatchExists } from '../services/batchService.js';
 import * as store from '../services/documentStore.js';
-import { convertPageToImage, getPageCount, renderPageToPng } from '../services/pdfService.js';
+import { getPageCount, renderPageToPng } from '../services/pdfService.js';
 import type { ApiResponse, Document } from '../types/index.js';
 import {
   documentNotFound,
   noFileUploaded,
   pageNotFound,
   processingError,
+  queueUnavailable,
 } from '../utils/errors.js';
 import { assertUuid, parsePageNumber, sanitizeFilename } from '../utils/validation.js';
 
@@ -21,21 +24,32 @@ const ok = <T>(res: Response, data: T, status = 200): void => {
 /**
  * POST /api/documents/upload
  *
- * Validates and stores the PDF, then answers immediately with the document in
- * `processing` state. Page 1 renders in the background and flips the status to
- * `ready`, which is what the client polls for. Parse failures are synchronous
- * (422) because there is nothing worth storing; render failures surface as
- * `status: 'error'` on the document, since by then the upload itself succeeded.
+ * Validates and stores the PDF, then hands it to the processing queue and
+ * answers immediately with the document in `queued` state. Rendering happens
+ * on a worker; progress arrives over the WebSocket. Parse failures are
+ * synchronous (422) because there is nothing worth storing; render failures
+ * surface later as `status: 'error'` on the document, since by then the upload
+ * itself succeeded.
+ *
+ * `batchId` on the form attaches the upload to a batch opened beforehand. Sent
+ * without one, the document is processed just the same and simply belongs to
+ * no batch.
  */
 export async function uploadDocument(req: Request, res: Response): Promise<void> {
   const file = req.file;
   if (!file) throw noFileUploaded();
+
+  const batchId = readBatchId(req);
+  if (batchId !== undefined) await assertBatchExists(batchId);
 
   const id = randomUUID();
   const filename = sanitizeFilename(file.originalname);
 
   // Reject unparseable PDFs before anything is written to disk.
   const pageCount = await getPageCount(file.buffer);
+
+  const contentHash = createHash('sha256').update(file.buffer).digest('hex');
+  const duplicateOf = await store.findDuplicate(contentHash);
 
   try {
     await fs.mkdir(store.pagesDir(id), { recursive: true });
@@ -57,35 +71,37 @@ export async function uploadDocument(req: Request, res: Response): Promise<void>
     pageCount,
     uploadPath: `${id}/original.pdf`,
     createdAt: new Date().toISOString(),
-    status: 'processing',
+    status: 'queued',
+    progress: 0,
+    ...(batchId === undefined ? {} : { batchId }),
+    contentHash,
   };
 
-  await store.create(document);
-  void renderPreview(id);
+  const created = await store.create(document, {
+    ...(batchId === undefined ? {} : { batchId }),
+    contentHash,
+  });
 
-  ok(res, document, 201);
+  try {
+    await queueDocument(created);
+  } catch (error) {
+    // The bytes are stored and the row exists, but nothing will pick it up.
+    // Say so now rather than leaving a document queued forever.
+    await store.setStatus(id, 'error', {
+      errorMessage: 'Could not reach the processing queue',
+      progress: 100,
+    });
+    throw queueUnavailable({ reason: error instanceof Error ? error.message : String(error) });
+  }
+
+  ok(res, { ...created, ...(duplicateOf === undefined ? {} : { duplicateOf }) }, 201);
 }
 
-/**
- * Render page 1 at full resolution plus a small thumbnail, then mark the
- * document ready or failed. The thumbnail keeps the batch grid Week 5 adds
- * from pulling a full-size PNG for every document.
- */
-async function renderPreview(id: string): Promise<void> {
-  try {
-    const pdfPath = store.originalPdfPath(id);
-    await convertPageToImage(pdfPath, 1, store.pagesDir(id), { dpi: config.pageDpi });
-
-    const source = await fs.readFile(pdfPath);
-    const thumbnail = await renderPageToPng(source, 1, { targetWidth: config.thumbnailWidth });
-    await fs.writeFile(store.thumbnailPath(id), thumbnail);
-
-    await store.setStatus(id, 'ready', { thumbnailUrl: store.thumbnailUrl(id) });
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    console.error(`[preview] document ${id} failed to render:`, reason);
-    await store.setStatus(id, 'error', { errorMessage: 'Failed to convert PDF to image' });
-  }
+/** `batchId` arrives as a multipart field beside the file. */
+function readBatchId(req: Request): string | undefined {
+  const raw = (req.body as { batchId?: unknown } | undefined)?.batchId;
+  if (raw === undefined || raw === '') return undefined;
+  return assertUuid(typeof raw === 'string' ? raw : String(raw));
 }
 
 /**

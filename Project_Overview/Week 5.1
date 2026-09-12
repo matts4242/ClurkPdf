@@ -1,1 +1,10 @@
 Week 5: Queue system → Batch processing (needs Weeks 1-3)
+
+Implemented. See the Week 5 entry in `.scaffold/sections/tasks/backlog.md` for
+what was delivered, and the "Week 5" section of the README's notes on the
+specification for where it departs from the plan above.
+
+Summary: every upload is queued rather than rendered inline, a BullMQ worker
+processes a bounded number of documents at once, progress reaches the browser
+over a WebSocket instead of a polling loop, and the processing job pre-fills
+the fields a born-digital invoice declares.

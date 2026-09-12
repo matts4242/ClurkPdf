@@ -2,6 +2,9 @@ import axios, { AxiosError, type AxiosInstance, type GenericAbortSignal } from '
 import type {
   ApiError,
   ApiResponse,
+  Batch,
+  BatchWithDocuments,
+  BatchWithProgress,
   CreateRegionInput,
   Document,
   DocumentWithStats,
@@ -87,10 +90,15 @@ async function unwrap<T>(request: Promise<{ data: ApiResponse<T> }>): Promise<T>
 export interface UploadOptions {
   onProgress?: (percent: number) => void;
   signal?: GenericAbortSignal;
+  /** Attach the upload to a batch opened with `createBatch`. */
+  batchId?: string;
 }
 
 export function uploadDocument(file: File, options: UploadOptions = {}): Promise<Document> {
   const form = new FormData();
+  // Multer only exposes fields that arrive before the file, so the batch id
+  // has to be appended first or the server will not see it.
+  if (options.batchId !== undefined) form.append('batchId', options.batchId);
   form.append('file', file);
 
   return unwrap<Document>(
@@ -197,6 +205,67 @@ export function fetchTextLayer(
   return unwrap<TextLayerData>(
     http.get(`/documents/${documentId}/text-layer/${pageNumber}`, signal ? { signal } : {}),
   );
+}
+
+// ---------------------------------------------------------------------------
+// Batches
+// ---------------------------------------------------------------------------
+
+export interface CreateBatchOptions {
+  name?: string;
+  /** How many files are about to go in. Only used to name an unnamed batch. */
+  fileCount?: number;
+}
+
+/**
+ * Open a batch to upload into.
+ *
+ * Created before the files are sent, so that a drop of fifty PDFs uploaded in
+ * parallel all land in one batch rather than each inventing its own. That is
+ * also why the file count is passed here: the server is opening the batch
+ * before a single file has reached it.
+ */
+export function createBatch(options: CreateBatchOptions = {}): Promise<Batch> {
+  return unwrap<{ batch: Batch }>(
+    http.post('/batches', {
+      ...(options.name === undefined ? {} : { name: options.name }),
+      ...(options.fileCount === undefined ? {} : { fileCount: options.fileCount }),
+    }),
+  ).then((payload) => payload.batch);
+}
+
+/** A batch, its pipeline counts, and every document in it. */
+export function fetchBatch(
+  id: string,
+  signal?: GenericAbortSignal,
+): Promise<BatchWithDocuments> {
+  return unwrap<{ batch: BatchWithDocuments }>(
+    http.get(`/batches/${id}`, signal ? { signal } : {}),
+  ).then((payload) => payload.batch);
+}
+
+export function listBatches(signal?: GenericAbortSignal): Promise<BatchWithProgress[]> {
+  return unwrap<{ batches: BatchWithProgress[] }>(
+    http.get('/batches', signal ? { signal } : {}),
+  ).then((payload) => payload.batches);
+}
+
+/** Delete a batch and every document uploaded into it. */
+export function deleteBatch(id: string): Promise<{ documentsDeleted: number }> {
+  return unwrap<{ documentsDeleted: number }>(http.delete(`/batches/${id}`));
+}
+
+/**
+ * WebSocket URL for live processing progress.
+ *
+ * Pass a batch id to hear only about that upload; omit it to hear everything,
+ * which is what the document list wants.
+ */
+export function progressSocketUrl(batchId?: string): string {
+  const url = new URL('/ws', SERVER_ORIGIN);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  if (batchId !== undefined) url.searchParams.set('batchId', batchId);
+  return url.toString();
 }
 
 export type { FieldType };
