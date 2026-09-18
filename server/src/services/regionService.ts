@@ -47,6 +47,7 @@ type RegionRow = {
   confidence: number | null;
   ocrError: string | null;
   ocrAt: Date | null;
+  autoDetected: boolean;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -69,6 +70,7 @@ function toRegion(row: RegionRow): Region {
     ...(row.confidence === null ? {} : { confidence: row.confidence }),
     ...(row.ocrError === null ? {} : { ocrError: row.ocrError }),
     ...(row.ocrAt === null ? {} : { ocrAt: row.ocrAt.toISOString() }),
+    autoDetected: row.autoDetected,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -288,6 +290,9 @@ export async function updateRegion(
       height: round(merged.height),
       fieldType,
       fieldLabel: label,
+      // Editing an auto-detected region is the review it was flagged for, so
+      // it stops being a suggestion and becomes the user's own.
+      autoDetected: false,
       ...(geometryChanged ? { ...clearedText, ...(rederived ?? {}) } : {}),
       // An explicit correction still applies when the rectangle did not move.
       ...(updates.correctedText === undefined || geometryChanged

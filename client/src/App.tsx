@@ -1,41 +1,100 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { FileStack, Trash2 } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { FileStack, Trash2, WifiOff } from 'lucide-react';
+import { BatchGrid } from './components/BatchGrid';
+import { BatchProgress } from './components/BatchProgress';
 import { DocumentViewer } from './components/DocumentViewer';
 import { FileDropzone } from './components/FileDropzone';
-import { UploadProgress, type UploadProgressStatus } from './components/UploadProgress';
-import { ApiRequestError, deleteDocument, listDocuments } from './api/client';
-import { useDocumentUpload } from './hooks/useDocumentUpload';
-import type { Document } from './types';
-import { formatBytes, formatPageCount } from './utils/format';
+import { UploadProgress } from './components/UploadProgress';
+import { deleteBatch, deleteDocument, fetchBatch, listDocuments } from './api/client';
+import { useBatchUpload, type Transfer } from './hooks/useBatchUpload';
+import { useProcessingEvents } from './hooks/useProcessingEvents';
+import {
+  applyProcessingEvent,
+  firstReady,
+  initialState,
+  type ProcessingState,
+} from './state/processing';
+import type { BatchWithDocuments, Document, ProcessingEvent } from './types';
 
-/** One entry in the upload queue, tracked until the server finishes with it. */
-interface QueueItem {
-  key: string;
-  file: File;
-  status: UploadProgressStatus;
-  progress: number;
-  errorMessage?: string;
+/**
+ * Week 5: upload a batch, watch the queue work through it, open any document
+ * that is ready.
+ *
+ * The state here is deliberately one-way. Uploading only puts bytes on the
+ * server; everything after that — a document starting, its progress, its
+ * fields being found, the batch finishing — arrives as a `ProcessingEvent` and
+ * is folded into the same `ProcessingState` the initial fetch fills. There is
+ * no polling and no second reconciliation path: a dropped socket reconnects
+ * and refetches.
+ *
+ * The fold itself lives in `state/processing.ts`, as a pure function, because
+ * that is the part with edge cases worth testing — out-of-order frames, a
+ * reconnect replaying events, news about a document this client never saw.
+ */
+
+/** Everything the view needs beyond one event: a fetch, or the user's doing. */
+type Action =
+  | { type: 'event'; event: ProcessingEvent }
+  | { type: 'documents.loaded'; documents: Document[] }
+  | { type: 'batch.loaded'; batch: BatchWithDocuments }
+  | { type: 'document.removed'; id: string }
+  | { type: 'batch.cleared' };
+
+function reduce(state: ProcessingState, action: Action): ProcessingState {
+  switch (action.type) {
+    case 'event':
+      return applyProcessingEvent(state, action.event);
+
+    case 'documents.loaded':
+      return { ...state, documents: action.documents };
+
+    case 'batch.loaded': {
+      const { documents, ...batch } = action.batch;
+      // Fold the batch's documents in rather than replacing the list: it holds
+      // only this upload, and the grid shows everything on the server.
+      return documents.reduce<ProcessingState>(
+        (current, document) =>
+          applyProcessingEvent(current, {
+            type: 'document.queued',
+            batchId: batch.id,
+            document,
+          }),
+        { ...state, batch },
+      );
+    }
+
+    case 'document.removed':
+      return {
+        ...state,
+        documents: state.documents.filter((document) => document.id !== action.id),
+      };
+
+    case 'batch.cleared':
+      return { ...state, batch: null };
+
+    default:
+      return state;
+  }
 }
 
-const MAX_RETRIES = 3;
-
 export default function App() {
-  const [documents, setDocuments] = useState<Document[]>([]);
+  const [state, dispatch] = useReducer(reduce, initialState);
+  const { documents, batch, detectedFields } = state;
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [queue, setQueue] = useState<QueueItem[]>([]);
 
-  const { upload, progress, status, cancel } = useDocumentUpload();
-  const pendingRef = useRef<File[]>([]);
-  const busyRef = useRef(false);
-  const retriesRef = useRef(new Map<string, number>());
+  const { send, retry, dismiss, cancelAll, transfers, isSending } = useBatchUpload();
 
-  // Documents already on the server survive a page reload, so list them once.
+  // The batch currently being watched. Undefined outside an upload, when the
+  // socket listens to everything instead.
+  const [watchedBatchId, setWatchedBatchId] = useState<string | undefined>(undefined);
+
+  // Documents already on the server survive a reload, so list them once.
   useEffect(() => {
     const controller = new AbortController();
     listDocuments(controller.signal)
       .then((existing) => {
-        setDocuments(existing);
-        setSelectedId((current) => current ?? existing[0]?.id ?? null);
+        dispatch({ type: 'documents.loaded', documents: existing });
+        setSelectedId((current) => current ?? firstReady(existing));
       })
       .catch(() => {
         // A cold server is expected on first run; the dropzone still works.
@@ -43,115 +102,84 @@ export default function App() {
     return () => controller.abort();
   }, []);
 
-  const patchQueueItem = useCallback((key: string, changes: Partial<QueueItem>) => {
-    setQueue((items) => items.map((item) => (item.key === key ? { ...item, ...changes } : item)));
+  const handleEvent = useCallback((event: ProcessingEvent) => {
+    dispatch({ type: 'event', event });
+    // Open the first document to finish, so the viewer is not left empty
+    // while the rest of the batch is still being worked through.
+    if (event.type === 'document.ready') {
+      setSelectedId((current) => current ?? event.document.id);
+    }
   }, []);
 
-  /**
-   * Upload queued files one at a time.
-   *
-   * Serialising keeps the progress bar meaningful and stops a 50-file batch
-   * from opening 50 sockets at once. Week 5 replaces this with a real queue.
-   */
-  const drainQueue = useCallback(async () => {
-    if (busyRef.current) return;
-    busyRef.current = true;
-
-    try {
-      for (;;) {
-        const next = pendingRef.current.shift();
-        if (!next) break;
-
-        const key = queueKey(next);
-        patchQueueItem(key, { status: 'uploading', progress: 0 });
-
-        try {
-          const document = await upload(next);
-          patchQueueItem(key, { status: 'complete', progress: 100 });
-          retriesRef.current.delete(key);
-
-          setDocuments((current) => [document, ...current.filter((d) => d.id !== document.id)]);
-          setSelectedId(document.id);
-
-          // Clear the finished row after a beat so the list stays readable.
-          window.setTimeout(() => {
-            setQueue((items) => items.filter((item) => item.key !== key));
-          }, 2500);
-        } catch (error) {
-          const attempts = (retriesRef.current.get(key) ?? 0) + 1;
-          retriesRef.current.set(key, attempts);
-          const message = error instanceof Error ? error.message : 'Upload failed';
-
-          if (attempts < MAX_RETRIES && error instanceof ApiRequestError && error.isRetryable) {
-            patchQueueItem(key, {
-              status: 'error',
-              errorMessage: `${message} Retrying (${attempts}/${MAX_RETRIES})...`,
-            });
-            // Exponential backoff before the file rejoins the queue.
-            await sleep(500 * 2 ** (attempts - 1));
-            pendingRef.current.push(next);
-          } else {
-            patchQueueItem(key, { status: 'error', errorMessage: message });
-          }
-        }
-      }
-    } finally {
-      busyRef.current = false;
+  /** Refetch after a reconnect: the socket is live state, not the record. */
+  const resync = useCallback(() => {
+    void listDocuments()
+      .then((existing) => dispatch({ type: 'documents.loaded', documents: existing }))
+      .catch(() => undefined);
+    if (watchedBatchId !== undefined) {
+      void fetchBatch(watchedBatchId)
+        .then((fetched) => dispatch({ type: 'batch.loaded', batch: fetched }))
+        .catch(() => undefined);
     }
-  }, [patchQueueItem, upload]);
+  }, [watchedBatchId]);
+
+  const connection = useProcessingEvents({
+    ...(watchedBatchId === undefined ? {} : { batchId: watchedBatchId }),
+    onEvent: handleEvent,
+    onResync: resync,
+  });
 
   const handleFilesSelected = useCallback(
     (files: File[]) => {
-      const items = files.map<QueueItem>((file) => ({
-        key: queueKey(file),
-        file,
-        status: 'uploading',
-        progress: 0,
-      }));
-
-      setQueue((current) => {
-        const known = new Set(current.map((item) => item.key));
-        return [...current, ...items.filter((item) => !known.has(item.key))];
+      void send(files).then(async (batchId) => {
+        if (batchId === undefined) return;
+        setWatchedBatchId(batchId);
+        // Draw the batch straight away rather than waiting for the first
+        // event, so the bar appears as soon as the files are accepted.
+        await fetchBatch(batchId)
+          .then((fetched) => dispatch({ type: 'batch.loaded', batch: fetched }))
+          .catch(() => undefined);
       });
-      pendingRef.current.push(...files);
-      void drainQueue();
     },
-    [drainQueue],
-  );
-
-  const retryItem = useCallback(
-    (item: QueueItem) => {
-      retriesRef.current.set(item.key, 0);
-      patchQueueItem(item.key, { status: 'uploading', progress: 0, errorMessage: undefined });
-      pendingRef.current.push(item.file);
-      void drainQueue();
-    },
-    [drainQueue, patchQueueItem],
+    [send],
   );
 
   const handleDelete = useCallback(
     async (id: string) => {
       await deleteDocument(id).catch(() => undefined);
-      setDocuments((current) => {
-        const remaining = current.filter((document) => document.id !== id);
-        setSelectedId((selected) => (selected === id ? (remaining[0]?.id ?? null) : selected));
-        return remaining;
-      });
+      dispatch({ type: 'document.removed', id });
+      if (selectedId === id) {
+        setSelectedId(firstReady(documents.filter((document) => document.id !== id)));
+      }
     },
-    [],
+    [documents, selectedId],
   );
 
-  // The active row mirrors the live hook state; finished rows keep their own.
-  const activeKey = queue.find((item) => item.status === 'uploading')?.key;
+  const handleClearBatch = useCallback(async () => {
+    if (!batch) return;
+    await deleteBatch(batch.id).catch(() => undefined);
+    dispatch({ type: 'batch.cleared' });
+    setWatchedBatchId(undefined);
+    cancelAll();
+    await listDocuments()
+      .then((existing) => {
+        dispatch({ type: 'documents.loaded', documents: existing });
+        setSelectedId(firstReady(existing));
+      })
+      .catch(() => undefined);
+  }, [batch, cancelAll]);
 
-  const cancelActive = useCallback(() => {
-    cancel();
-    pendingRef.current = [];
-    if (activeKey !== undefined) {
-      retriesRef.current.delete(activeKey);
-      setQueue((items) => items.filter((item) => item.key !== activeKey));
-    }
-  }, [cancel, activeKey]);
+  // A transfer stops being worth a row once the server has the file: from
+  // there on the document's own card carries its progress.
+  const visibleTransfers = useMemo(
+    () => transfers.filter((transfer) => transfer.status !== 'sent'),
+    [transfers],
+  );
+
+  useDismissSentTransfers(transfers, dismiss);
+
+  const selected = documents.find((document) => document.id === selectedId);
+  const canOpen = selected?.status === 'ready';
 
   return (
     <div className="flex h-full flex-col">
@@ -159,83 +187,74 @@ export default function App() {
         <FileStack className="h-5 w-5 text-sky-600" aria-hidden="true" />
         <h1 className="text-sm font-semibold text-slate-800">Invoice Processor</h1>
         <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-500">
-          Week 4 &middot; Text layer
+          Week 5 &middot; Batch queue
         </span>
+
+        {connection !== 'open' && (
+          <span
+            className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] text-amber-700"
+            title="Live progress is unavailable; reconnecting"
+          >
+            <WifiOff className="h-3 w-3" aria-hidden="true" />
+            Offline
+          </span>
+        )}
+
         <span className="ml-auto text-xs text-slate-400">
           {documents.length} {documents.length === 1 ? 'document' : 'documents'}
         </span>
       </header>
 
-      <main className="grid min-h-0 flex-1 gap-4 p-4 lg:grid-cols-[22rem_1fr]">
-        <div className="flex min-h-0 min-w-0 flex-col gap-4 overflow-y-auto">
-          <FileDropzone onFilesSelected={handleFilesSelected} disabled={status === 'uploading'} />
+      <main className="grid min-h-0 flex-1 gap-4 p-4 lg:grid-cols-[24rem_1fr]">
+        <div className="flex min-h-0 min-w-0 flex-col gap-3 overflow-y-auto">
+          <FileDropzone onFilesSelected={handleFilesSelected} disabled={isSending} />
 
-          {queue.length > 0 && (
+          {batch !== null && batch.documentCount > 0 && (
             <div className="space-y-2">
-              {queue.map((item) => (
+              <BatchProgress batch={batch} live={connection === 'open'} />
+              <button
+                type="button"
+                onClick={() => void handleClearBatch()}
+                className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-200 px-2 py-1.5 text-[11px] text-slate-500 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600"
+              >
+                <Trash2 className="h-3 w-3" aria-hidden="true" />
+                Discard this batch
+              </button>
+            </div>
+          )}
+
+          {visibleTransfers.length > 0 && (
+            <div className="space-y-2">
+              {visibleTransfers.map((transfer) => (
                 <UploadProgress
-                  key={item.key}
-                  fileName={item.file.name}
-                  progress={item.key === activeKey ? progress : item.progress}
-                  status={item.key === activeKey ? liveStatus(status, item.status) : item.status}
-                  {...(item.errorMessage === undefined
+                  key={transfer.key}
+                  fileName={transfer.file.name}
+                  progress={transfer.progress}
+                  status={transfer.status === 'error' ? 'error' : 'uploading'}
+                  {...(transfer.errorMessage === undefined
                     ? {}
-                    : { errorMessage: item.errorMessage })}
-                  onRetry={() => retryItem(item)}
-                  {...(item.key === activeKey ? { onCancel: cancelActive } : {})}
+                    : { errorMessage: transfer.errorMessage })}
+                  onRetry={() => retry(transfer.key)}
+                  onCancel={() => dismiss(transfer.key)}
                 />
               ))}
             </div>
           )}
 
-          {documents.length > 0 && (
-            <ul className="space-y-1.5">
-              {documents.map((document) => (
-                <li key={document.id}>
-                  <div
-                    className={`flex items-center gap-2 rounded-xl border px-3 py-2 transition-colors ${
-                      document.id === selectedId
-                        ? 'border-sky-400 bg-sky-50'
-                        : 'border-slate-200 bg-white hover:border-slate-300'
-                    }`}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => setSelectedId(document.id)}
-                      className="min-w-0 flex-1 text-left"
-                      aria-current={document.id === selectedId}
-                    >
-                      <p className="truncate text-sm font-medium text-slate-700">
-                        {document.originalName}
-                      </p>
-                      <p className="text-[11px] text-slate-400">
-                        {formatPageCount(document.pageCount)} &middot;{' '}
-                        {formatBytes(document.size)}
-                      </p>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void handleDelete(document.id)}
-                      className="shrink-0 rounded p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
-                      aria-label={`Delete ${document.originalName}`}
-                    >
-                      <Trash2 className="h-4 w-4" aria-hidden="true" />
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
+          <BatchGrid
+            documents={documents}
+            selectedId={selectedId}
+            onSelect={setSelectedId}
+            onDelete={(id) => void handleDelete(id)}
+            detectedFields={detectedFields}
+          />
         </div>
 
         {/* min-w-0 keeps a zoomed page inside the viewer's own scroll area
             rather than widening the grid and scrolling the whole window. */}
         <div className="min-h-0 min-w-0">
-          {selectedId === null ? (
-            <div className="flex h-full min-h-96 flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-slate-300 bg-white text-center">
-              <FileStack className="h-8 w-8 text-slate-300" aria-hidden="true" />
-              <p className="text-sm text-slate-500">Upload a PDF to see it here.</p>
-            </div>
+          {selectedId === null || !canOpen ? (
+            <EmptyViewer waiting={selectedId !== null} />
           ) : (
             <DocumentViewer key={selectedId} documentId={selectedId} />
           )}
@@ -245,29 +264,40 @@ export default function App() {
   );
 }
 
-/** Stable identity for a queued file across retries. */
-const queueKey = (file: File): string => `${file.name}-${file.size}-${file.lastModified}`;
-
-/** Map the hook's state onto the row's four visual states. */
-function liveStatus(
-  hookStatus: ReturnType<typeof useDocumentUpload>['status'],
-  fallback: UploadProgressStatus,
-): UploadProgressStatus {
-  switch (hookStatus) {
-    case 'uploading':
-      return 'uploading';
-    case 'processing':
-      return 'processing';
-    case 'success':
-      return 'complete';
-    case 'error':
-      return 'error';
-    default:
-      return fallback;
-  }
+function EmptyViewer({ waiting }: { waiting: boolean }) {
+  return (
+    <div className="flex h-full min-h-96 flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-slate-300 bg-white text-center">
+      <FileStack className="h-8 w-8 text-slate-300" aria-hidden="true" />
+      <p className="text-sm text-slate-500">
+        {waiting
+          ? 'This document is still being processed.'
+          : 'Upload some PDFs to see them here.'}
+      </p>
+    </div>
+  );
 }
 
-const sleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => {
-    window.setTimeout(resolve, ms);
-  });
+/**
+ * Drop a transfer row once its file is on the server.
+ *
+ * The row and the document card would otherwise both be on screen saying
+ * different things about the same file, because one tracks the upload and the
+ * other tracks the processing.
+ */
+function useDismissSentTransfers(
+  transfers: Transfer[],
+  dismiss: (key: string) => void,
+): void {
+  const dismissRef = useRef(dismiss);
+  dismissRef.current = dismiss;
+
+  useEffect(() => {
+    const sent = transfers.filter((transfer) => transfer.status === 'sent');
+    if (sent.length === 0) return;
+
+    const timer = window.setTimeout(() => {
+      for (const transfer of sent) dismissRef.current(transfer.key);
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [transfers]);
+}

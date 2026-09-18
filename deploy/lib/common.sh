@@ -137,14 +137,20 @@ psql_admin() {
   runuser -u postgres -- psql -v ON_ERROR_STOP=1 -Atq -c "$1"
 }
 
-# The connection string the service itself uses, read back out of its .env.
-app_database_url() {
-  local line
-  line=$(grep -m1 '^DATABASE_URL=' "$APP_DIR/server/.env" 2>/dev/null || true)
-  line=${line#DATABASE_URL=}
+# One setting, read back out of the service's own .env. Quotes stripped; an
+# absent key prints nothing, so callers can supply their own default.
+app_env_value() {
+  local key=$1 line
+  line=$(grep -m1 "^${key}=" "$APP_DIR/server/.env" 2>/dev/null || true)
+  line=${line#"${key}="}
   line=${line%\"}
   line=${line#\"}
   printf '%s' "$line"
+}
+
+# The connection string the service itself uses.
+app_database_url() {
+  app_env_value DATABASE_URL
 }
 
 # Prisma's connection string carries parameters libpq has never heard of —

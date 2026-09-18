@@ -1,4 +1,4 @@
-import { SquareDashed, Trash2 } from 'lucide-react';
+import { Sparkles, SquareDashed, Trash2 } from 'lucide-react';
 import { FieldTypeSelector } from './FieldTypeSelector';
 import { RegionTextPanel } from './RegionTextPanel';
 import {
@@ -81,6 +81,14 @@ export function RegionList({
                       ? region.fieldLabel
                       : FIELD_TYPE_META[region.fieldType].label}
                   </span>
+                  {/* Week 5: a regex guess, not something the user marked.
+                      Editing it clears the flag. */}
+                  {region.autoDetected && (
+                    <Sparkles
+                      className="h-3 w-3 shrink-0 text-violet-500"
+                      aria-label="Found automatically — please check"
+                    />
+                  )}
                   <span className="ml-auto shrink-0 text-[11px] text-slate-400">
                     p{region.pageNumber}
                   </span>

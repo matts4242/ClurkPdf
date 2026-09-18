@@ -102,13 +102,56 @@ layer and swallowed the caret, and the first overlap rule required half a text
 run to be inside the rectangle — which no ordinary selection satisfies, because
 pdf.js emits a whole line as one run.
 
-## Weeks 5-7
+## Week 5 — Batch queue, live progress, and automatic fields
 
-Not started. One line of intent each in `Project_Overview/Week 5.1` through
-`Week 7.1`: batch queueing, templates, export.
+- [x] `Batch` model, `Document.batchId`, and batch CRUD endpoints. Progress is
+      derived from the documents on every read rather than kept as a counter,
+      since three workers updating one would race
+- [x] BullMQ queue plus a worker bounded by `QUEUE_CONCURRENCY`; the upload
+      endpoint queues and returns `queued` instead of rendering inline
+- [x] WebSocket at `/ws` carrying `ProcessingEvent`, filterable by batch. The
+      client's polling loop is gone
+- [x] `BatchGrid` thumbnail grid with per-document status badges and progress,
+      and `BatchProgress` for the pipeline stages
+- [x] Auto-detection of the fields an invoice declares, from the text layer
 
-Week 5 needs Redis and Bull, and replaces the serial upload loop in `App.tsx`
-with a real queue plus WebSocket progress. Week 7's export is the first point
-where the two capture modes have to produce one flat row per document; because
-both already write to `Region`, that should be a single query rather than a
-merge.
+Also delivered:
+
+- [x] A restart no longer loses work. A document stranded mid-render returns to
+      `queued` and is re-enqueued, rather than being marked failed as in Weeks
+      1-4 — the main thing the queue buys
+- [x] Hash-based duplicate detection, reported as `duplicateOf`. A warning, not
+      a refusal
+- [x] Detected regions are flagged `autoDetected`: marked in the sidebar, drawn
+      dashed on the canvas, and cleared the moment a person edits one
+- [x] Uploads run three at a time instead of strictly serially, now that the
+      transfer is the whole wait
+- [x] Redis added to docker-compose, CI, and the VPS installer — including the
+      nginx `/ws` upgrade, without which live progress fails silently behind
+      the proxy
+- [x] 43 new server tests and 18 new client tests; 158 across the project
+
+Deviations from the spec, recorded in the README: BullMQ rather than Bull
+(Bull 4 is in maintenance, BullMQ is its successor); progress events travel
+over Redis pub/sub rather than an in-process emitter, so a second worker
+process can still reach a browser connected to the first; and only the first
+`EAGER_RENDER_PAGES` pages are rendered up front rather than every page, so one
+200-page PDF cannot hold a worker while a batch waits.
+
+Two bugs found while testing this slice. Using the document id as the BullMQ
+job id deduplicates concurrent submissions, which is wanted — but BullMQ
+retains finished jobs, and `add` against a retained id does nothing *silently*,
+so recovering a document that had already completed once left it queued for
+ever. And the amount pattern matched `504` out of `5040.00`, because with the
+group separators optional the `.00` was neither a group nor a decimal part.
+
+## Weeks 6-7
+
+Not started. One line of intent each in `Project_Overview/Week 6.1` and
+`Week 7.1`: templates, export.
+
+Week 6 builds on Week 5's detection: a template is the same idea keyed to a
+known vendor rather than to a regex, and `autoDetected` already marks which
+regions came from a machine. Week 7's export is the first point where the two
+capture modes have to produce one flat row per document; because both already
+write to `Region`, that should be a single query rather than a merge.

@@ -52,7 +52,7 @@ export function buildPdf(pageTexts: string[] = ['Hello invoice']): Buffer {
 export const invalidPdfBytes = Buffer.from('%PDF-1.4\nnot actually a pdf\n', 'latin1');
 
 /** One text run on a page: position in PDF points, size, and the text itself. */
-type TextRun = [x: number, y: number, size: number, text: string];
+export type TextRun = [x: number, y: number, size: number, text: string];
 
 /**
  * A single-page invoice with well-separated fields.
@@ -62,7 +62,7 @@ type TextRun = [x: number, y: number, size: number, text: string];
  * space, where y counts up from the bottom of a 612x792 page.
  */
 export function buildInvoicePdf(): Buffer {
-  const runs: TextRun[] = [
+  return buildPositionedPdf([
     [72, 720, 22, 'ACME Supply Co'],
     [72, 690, 12, '119 Harbour Road, Bristol'],
     [400, 720, 14, 'INVOICE'],
@@ -74,8 +74,48 @@ export function buildInvoicePdf(): Buffer {
     [400, 480, 12, 'Subtotal: 4200.00'],
     [400, 460, 12, 'Tax: 840.00'],
     [400, 435, 14, 'Total: 5040.00'],
-  ];
+  ]);
+}
 
+/**
+ * An invoice laid out in two columns, with the label and its value written as
+ * separate runs.
+ *
+ * The common real-world shape, and the one that distinguishes a detector that
+ * reads whole lines from one that only handles "Label: value" in a single run.
+ */
+export function buildColumnarInvoicePdf(): Buffer {
+  return buildPositionedPdf([
+    [72, 730, 20, 'Northwind Traders Ltd'],
+    [72, 706, 10, 'VAT GB 123 4567 89'],
+    [380, 730, 16, 'TAX INVOICE'],
+
+    [380, 700, 11, 'Invoice Number'],
+    [480, 700, 11, 'NW-99120'],
+    [380, 682, 11, 'Invoice Date'],
+    [480, 682, 11, '2026-03-14'],
+    [380, 664, 11, 'Due Date'],
+    [480, 664, 11, '2026-04-13'],
+
+    [380, 500, 11, 'Subtotal'],
+    [490, 500, 11, '1,250.00'],
+    [380, 482, 11, 'VAT (20%)'],
+    [490, 482, 11, '250.00'],
+    [380, 460, 13, 'Amount Due'],
+    [490, 460, 13, '1,500.00'],
+  ]);
+}
+
+/** A page of text with no invoice fields on it at all. */
+export function buildProsePdf(): Buffer {
+  return buildPositionedPdf([
+    [72, 700, 12, 'Thank you for your custom this year.'],
+    [72, 680, 12, 'We look forward to working with you again.'],
+  ]);
+}
+
+/** Build a one-page PDF from explicitly positioned runs. */
+export function buildPositionedPdf(runs: TextRun[]): Buffer {
   const stream = runs
     .map(
       ([x, y, size, text]) =>

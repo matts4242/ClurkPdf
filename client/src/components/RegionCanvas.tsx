@@ -94,7 +94,14 @@ export function RegionCanvas({
     for (const region of pageRegions) {
       const rect = liveRectFor(region);
       const isSelected = region.id === selectedRegionId;
-      paintRegion(ctx, rect, FIELD_TYPE_META[region.fieldType].color, regionLabel(region), isSelected);
+      paintRegion(
+        ctx,
+        rect,
+        FIELD_TYPE_META[region.fieldType].color,
+        regionLabel(region),
+        isSelected,
+        region.autoDetected,
+      );
     }
 
     if (interaction.kind === 'drawing') {
@@ -275,13 +282,14 @@ export function RegionCanvas({
   );
 }
 
-/** Draw one region: translucent fill, solid border, name tag, handles if selected. */
+/** Draw one region: translucent fill, border, name tag, handles if selected. */
 function paintRegion(
   ctx: CanvasRenderingContext2D,
   rect: PixelRect,
   color: string,
   label: string,
   isSelected: boolean,
+  autoDetected = false,
 ): void {
   ctx.save();
 
@@ -290,7 +298,12 @@ function paintRegion(
 
   ctx.strokeStyle = color;
   ctx.lineWidth = isSelected ? 2 : 1.25;
+  // A box the processing job guessed is drawn dashed, so a glance at the page
+  // separates what was found automatically from what was marked deliberately.
+  // Editing it makes it solid, because that is the review it was asking for.
+  if (autoDetected) ctx.setLineDash([6, 3]);
   ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
+  ctx.setLineDash([]);
 
   // Name tag, placed above the box unless that would leave the page.
   ctx.font = '500 11px ui-sans-serif, system-ui, sans-serif';

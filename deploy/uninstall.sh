@@ -8,7 +8,7 @@
 # separately about each of the three things that cannot be put back: the
 # database, the uploaded documents, and the service account.
 #
-# PostgreSQL, Node.js and nginx are left installed. They are ordinary system
+# PostgreSQL, Redis, Node.js and nginx are left installed. They are ordinary system
 # packages that something else on the machine may be using, so removing them is
 # not this script's decision to make.
 
@@ -226,7 +226,7 @@ main() {
   ui_kv 'nginx site' 'clurkpdf'
   ui_kv 'Command' '/usr/local/bin/clurkpdf'
   ui_blank
-  ui_dim '  PostgreSQL, Node.js and nginx themselves are left installed.'
+  ui_dim '  PostgreSQL, Redis, Node.js and nginx themselves are left installed.'
   ui_dim '  Any Let'"'"'s Encrypt certificate is left in /etc/letsencrypt.'
 
   if [[ $KEEP_DATA != 1 ]]; then

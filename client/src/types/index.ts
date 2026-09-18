@@ -17,10 +17,19 @@ export interface ApiError {
   details?: unknown;
 }
 
-export type DocumentStatus = 'uploaded' | 'processing' | 'ready' | 'error';
+/**
+ * Where a document sits in the pipeline.
+ *
+ * Week 5 replaced `uploaded` with `queued`: uploading hands the document to
+ * the processing queue rather than rendering it inline, so "stored but not yet
+ * picked up" is a state the client can now see.
+ */
+export type DocumentStatus = 'queued' | 'processing' | 'ready' | 'error';
 
 export interface Document {
   id: string;
+  /** The upload this document arrived with, when it came in as part of one. */
+  batchId?: string;
   filename: string;
   originalName: string;
   mimeType: string;
@@ -29,8 +38,14 @@ export interface Document {
   uploadPath: string;
   createdAt: string;
   status: DocumentStatus;
+  /** How far the processing job has got, 0-100. */
+  progress: number;
   thumbnailUrl?: string;
   errorMessage?: string;
+  /** SHA-256 of the uploaded bytes. */
+  contentHash?: string;
+  /** Set when an earlier document holds the same bytes. A warning, not a block. */
+  duplicateOf?: string;
 }
 
 export type UploadStatus = 'idle' | 'uploading' | 'processing' | 'success' | 'error';
@@ -125,6 +140,8 @@ export interface Region extends NormalizedRect {
   confidence?: number;
   ocrError?: string;
   ocrAt?: string;
+  /** Week 5: found by the processing job rather than marked by a person. */
+  autoDetected: boolean;
 
   createdAt: string;
   updatedAt: string;
@@ -178,6 +195,77 @@ export type UpdateRegionInput = Partial<NormalizedRect> & {
 
 /** How pointer input on the page is interpreted. */
 export type ViewerMode = 'pan' | 'draw' | 'select' | 'text';
+
+// ---------------------------------------------------------------------------
+// Week 5: batches and live progress
+// ---------------------------------------------------------------------------
+
+export type BatchStatus = 'queued' | 'processing' | 'complete';
+
+export interface Batch {
+  id: string;
+  name: string;
+  status: BatchStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BatchWithProgress extends Batch {
+  documentCount: number;
+  /** Documents in each stage. The four always sum to `documentCount`. */
+  counts: Record<DocumentStatus, number>;
+  /** Mean of the documents' own progress, 0-100. */
+  progress: number;
+  detectedFieldCount: number;
+}
+
+export interface BatchWithDocuments extends BatchWithProgress {
+  documents: Document[];
+}
+
+/** Events the server pushes over the WebSocket as the queue works. */
+export type ProcessingEvent =
+  | { type: 'document.queued'; batchId: string | null; document: Document }
+  | { type: 'document.progress'; batchId: string | null; documentId: string; progress: number }
+  | { type: 'document.ready'; batchId: string | null; document: Document; detectedFields: number }
+  | { type: 'document.error'; batchId: string | null; documentId: string; message: string }
+  | { type: 'batch.progress'; batchId: string; batch: BatchWithProgress }
+  | { type: 'batch.complete'; batchId: string; batch: BatchWithProgress };
+
+/** The pipeline stages the spec asks the queue view to show, in order. */
+export const PIPELINE_STAGES = [
+  { status: 'queued', label: 'Queued' },
+  { status: 'processing', label: 'Processing' },
+  { status: 'ready', label: 'Review' },
+  { status: 'error', label: 'Failed' },
+] as const satisfies readonly { status: DocumentStatus; label: string }[];
+
+/** How each document status is drawn on a grid badge. */
+export const STATUS_META: Record<
+  DocumentStatus,
+  { label: string; className: string; dot: string }
+> = {
+  queued: {
+    label: 'Queued',
+    className: 'bg-slate-100 text-slate-600',
+    dot: 'bg-slate-400',
+  },
+  processing: {
+    label: 'Processing',
+    className: 'bg-sky-100 text-sky-700',
+    dot: 'bg-sky-500',
+  },
+  ready: {
+    label: 'Ready',
+    className: 'bg-emerald-100 text-emerald-700',
+    dot: 'bg-emerald-500',
+  },
+  error: {
+    label: 'Failed',
+    className: 'bg-rose-100 text-rose-700',
+    dot: 'bg-rose-500',
+  },
+};
 
 /** Display name for a region, falling back to its field type. */
 export const regionLabel = (region: Region): string =>

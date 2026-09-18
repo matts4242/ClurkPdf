@@ -32,6 +32,7 @@ export const thumbnailUrl = (id: string): string => `/uploads/${id}/thumbnail.pn
 /** Shape Prisma rows into the API's Document type. */
 type DocumentRow = {
   id: string;
+  batchId: string | null;
   filename: string;
   originalName: string;
   mimeType: string;
@@ -39,12 +40,14 @@ type DocumentRow = {
   pageCount: number;
   uploadPath: string;
   status: string;
+  progress: number;
   thumbnailUrl: string | null;
   errorMessage: string | null;
+  contentHash: string | null;
   createdAt: Date;
 };
 
-function toDocument(row: DocumentRow): Document {
+export function toDocument(row: DocumentRow): Document {
   return {
     id: row.id,
     filename: row.filename,
@@ -55,26 +58,49 @@ function toDocument(row: DocumentRow): Document {
     uploadPath: row.uploadPath,
     createdAt: row.createdAt.toISOString(),
     status: row.status as DocumentStatus,
+    progress: row.progress,
+    ...(row.batchId === null ? {} : { batchId: row.batchId }),
     ...(row.thumbnailUrl === null ? {} : { thumbnailUrl: row.thumbnailUrl }),
     ...(row.errorMessage === null ? {} : { errorMessage: row.errorMessage }),
+    ...(row.contentHash === null ? {} : { contentHash: row.contentHash }),
   };
 }
 
 /**
- * Mark documents stranded mid-render by a crash as failed.
+ * Return documents stranded mid-render by a crash to the queue.
  *
- * Called once at startup. Nothing is going to finish rendering them, so
- * leaving them at `processing` would make clients poll forever.
+ * Called once at startup. Before Week 5 nothing was going to finish these, so
+ * they were marked failed; now the job is durable and can simply be run again,
+ * which is the main thing the queue buys. Only the row is reset here — the
+ * caller re-enqueues, because this module knows nothing about the queue.
  */
-export async function failInterruptedProcessing(): Promise<number> {
-  const { count } = await getPrisma().document.updateMany({
+export async function resetInterruptedProcessing(): Promise<string[]> {
+  const stranded = await getPrisma().document.findMany({
     where: { status: 'processing' },
-    data: { status: 'error', errorMessage: 'Processing was interrupted by a server restart' },
+    select: { id: true },
   });
-  return count;
+  if (stranded.length === 0) return [];
+
+  await getPrisma().document.updateMany({
+    where: { id: { in: stranded.map((row) => row.id) } },
+    data: { status: 'queued', progress: 0, errorMessage: null },
+  });
+  return stranded.map((row) => row.id);
 }
 
-export async function create(document: Document): Promise<Document> {
+/** Every document waiting on the queue, oldest first. */
+export async function listQueued(): Promise<{ id: string; batchId: string | null }[]> {
+  return getPrisma().document.findMany({
+    where: { status: 'queued' },
+    select: { id: true, batchId: true },
+    orderBy: { createdAt: 'asc' },
+  });
+}
+
+export async function create(
+  document: Document,
+  extra: { batchId?: string; contentHash?: string } = {},
+): Promise<Document> {
   const row = await getPrisma().document.create({
     data: {
       id: document.id,
@@ -85,11 +111,36 @@ export async function create(document: Document): Promise<Document> {
       pageCount: document.pageCount,
       uploadPath: document.uploadPath,
       status: document.status,
+      progress: document.progress,
       thumbnailUrl: document.thumbnailUrl ?? null,
       errorMessage: document.errorMessage ?? null,
+      batchId: extra.batchId ?? null,
+      contentHash: extra.contentHash ?? null,
     },
   });
   return toDocument(row);
+}
+
+/**
+ * The earliest other document holding the same bytes.
+ *
+ * The spec asks for a visual warning on a duplicate upload, not a rejection:
+ * re-uploading an invoice is a legitimate thing to do, and only the user knows
+ * whether this one is a mistake.
+ */
+export async function findDuplicate(
+  contentHash: string,
+  excludeId?: string,
+): Promise<string | undefined> {
+  const row = await getPrisma().document.findFirst({
+    where: {
+      contentHash,
+      ...(excludeId === undefined ? {} : { id: { not: excludeId } }),
+    },
+    select: { id: true },
+    orderBy: { createdAt: 'asc' },
+  });
+  return row?.id;
 }
 
 export async function get(id: string): Promise<Document | undefined> {
@@ -128,7 +179,7 @@ export async function list(): Promise<Document[]> {
 export async function setStatus(
   id: string,
   status: DocumentStatus,
-  extra: { thumbnailUrl?: string; errorMessage?: string } = {},
+  extra: { thumbnailUrl?: string; errorMessage?: string; progress?: number } = {},
 ): Promise<Document | undefined> {
   const row = await getPrisma()
     .document.update({
@@ -137,6 +188,7 @@ export async function setStatus(
         status,
         ...(extra.thumbnailUrl === undefined ? {} : { thumbnailUrl: extra.thumbnailUrl }),
         ...(extra.errorMessage === undefined ? {} : { errorMessage: extra.errorMessage }),
+        ...(extra.progress === undefined ? {} : { progress: clampProgress(extra.progress) }),
       },
     })
     // The document was deleted while its preview was rendering.
@@ -144,6 +196,21 @@ export async function setStatus(
 
   return row ? toDocument(row) : undefined;
 }
+
+/**
+ * Record how far a processing job has got.
+ *
+ * Separate from `setStatus` because it is called several times per document
+ * and must not disturb anything else on the row.
+ */
+export async function setProgress(id: string, progress: number): Promise<void> {
+  await getPrisma()
+    .document.update({ where: { id }, data: { progress: clampProgress(progress) } })
+    .catch(() => undefined);
+}
+
+const clampProgress = (value: number): number =>
+  Math.max(0, Math.min(100, Math.round(value)));
 
 /**
  * Delete a document, its regions, and its files.

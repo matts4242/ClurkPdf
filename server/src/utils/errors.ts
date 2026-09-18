@@ -82,3 +82,14 @@ export const invalidPage = (pageNumber: number, pageCount: number): AppError =>
 
 export const invalidFieldType = (received: unknown): AppError =>
   new AppError('INVALID_FIELD_TYPE', 'Unknown field type', 400, { received });
+
+export const batchNotFound = (id: string): AppError =>
+  new AppError('BATCH_NOT_FOUND', `No batch with id ${id}`, 404, { id });
+
+export const queueUnavailable = (details?: unknown): AppError =>
+  new AppError(
+    'QUEUE_UNAVAILABLE',
+    'The processing queue is not reachable. Is Redis running?',
+    503,
+    details,
+  );

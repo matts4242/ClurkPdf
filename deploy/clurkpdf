@@ -92,6 +92,17 @@ count_documents() {
   psql_app -Atqc 'SELECT count(*) FROM "Document"' 2>/dev/null || printf 'unknown'
 }
 
+# Documents the queue has not finished with. Read from the database rather than
+# from Redis: the row is the record, and the job is only how it gets worked.
+count_queued() {
+  local url
+  url=$(app_database_url)
+  [[ -n $url ]] || { printf '0'; return 0; }
+  psql_app -Atqc \
+    "SELECT count(*) FROM \"Document\" WHERE status IN ('queued', 'processing')" \
+    2>/dev/null || printf '0'
+}
+
 cmd_health() {
   local body
   if body=$(curl -fsS -m 5 "http://127.0.0.1:${API_PORT}/api/health" 2>/dev/null); then
@@ -136,6 +147,23 @@ cmd_doctor() {
     ui_ok "Reachable, $(count_documents) document(s) stored"
   else
     ui_err 'The connection string in server/.env does not work'
+    problems=$((problems + 1))
+  fi
+
+  ui_section 'Queue'
+  # A dead Redis is the quiet failure this command exists for: uploads are
+  # still accepted, and nothing ever renders them.
+  local redis_url queued
+  redis_url=$(app_env_value REDIS_URL)
+  if redis-cli ${redis_url:+-u "$redis_url"} ping >/dev/null 2>&1; then
+    queued=$(count_queued)
+    if [[ ${queued:-0} -gt 0 ]]; then
+      ui_ok "Redis is reachable, ${queued} document(s) waiting"
+    else
+      ui_ok 'Redis is reachable, nothing waiting'
+    fi
+  else
+    ui_err "Redis is not answering at ${redis_url:-redis://127.0.0.1:6379} — uploads will never be processed"
     problems=$((problems + 1))
   fi
 
