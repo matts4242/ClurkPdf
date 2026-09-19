@@ -8,6 +8,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
+    "dev:preview": "vite --config vite.preview.config.ts",
+    "build:preview": "tsc -b && vite build --config vite.preview.config.ts",
+    "serve:preview": "vite preview --config vite.preview.config.ts",
     "typecheck": "tsc -b --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"

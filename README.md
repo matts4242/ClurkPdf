@@ -57,6 +57,7 @@ can share a Redis with development without ever seeing its jobs.
 
 ```
 client/     React 19 + TypeScript + Vite + Tailwind front end
+  src/preview/  In-browser mock server for the preview build (docs/preview.md)
 server/     Express + TypeScript API
   prisma/   Schema and migrations
   src/queue/   BullMQ queue, worker, and Redis connections
@@ -81,9 +82,16 @@ Run these from the repository root.
 | `npm run db:migrate` | Creates and applies a migration from the schema |
 | `npm run db:deploy` | Applies existing migrations (use in deployment) |
 | `npm start` | Runs the compiled API from `server/dist` |
+| `npm run dev:preview` | Front end only, against an in-browser mock server |
+| `npm run build:preview` | Builds that mock-backed front end to `client/dist-preview/` |
 
 Each package also runs on its own with `npm run dev` inside `client/` or
 `server/`.
+
+The two preview commands build the real front end with `src/api/client.ts`
+swapped for a mock that runs in the browser, so the UI can be opened, linked to
+and shown to someone without a database, a queue, or a deploy. See
+[`docs/preview.md`](./docs/preview.md).
 
 ## Configuration
 

@@ -17,6 +17,8 @@
     "build": "npm run build:server && npm run build:client",
     "build:server": "npm run build --workspace server",
     "build:client": "npm run build --workspace client",
+    "dev:preview": "npm run dev:preview --workspace client",
+    "build:preview": "npm run build:preview --workspace client",
     "start": "npm run start --workspace server",
     "test": "npm run test --workspace server && npm run test --workspace client",
     "typecheck": "npm run typecheck --workspace server && npm run typecheck --workspace client",
