@@ -40,6 +40,9 @@ export const ERROR_CODES = [
   // Week 5: batches and the processing queue
   'BATCH_NOT_FOUND',
   'QUEUE_UNAVAILABLE',
+  // Week 6: templates
+  'TEMPLATE_NOT_FOUND',
+  'TEMPLATE_EMPTY',
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -75,6 +78,10 @@ export interface Document {
   status: DocumentStatus;
   /** How far processing has got, 0-100. */
   progress: number;
+  /** Week 6: the template that filled this document's fields in, if one did. */
+  templateId?: string;
+  /** How well the vendor matched, 0-1. Only meaningful with `templateId`. */
+  templateScore?: number;
   /** URL of the page-1 preview image. Present once the page has rendered. */
   thumbnailUrl?: string;
   /** Populated when `status` is `error`. */
@@ -315,4 +322,79 @@ export interface DetectedField {
   rect: NormalizedRect;
   /** 0-100. A labelled match scores higher than a positional guess. */
   confidence: number;
+}
+
+// ---------------------------------------------------------------------------
+// Week 6: templates
+// ---------------------------------------------------------------------------
+
+/** One saved rectangle in a template. Normalised, so it replays at any size. */
+export interface TemplateRegion extends NormalizedRect {
+  pageNumber: number;
+  fieldType: FieldType;
+  fieldLabel?: string;
+}
+
+export interface Template {
+  id: string;
+  name: string;
+  /** The vendor name this template is recognised by. */
+  vendorIdentifier: string;
+  regions: TemplateRegion[];
+  /** The document it was learned from. Absent once that document is deleted. */
+  sourceDocumentId?: string;
+  /** How many documents it has filled in, and when it last did. */
+  useCount: number;
+  lastUsedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateTemplateRequest {
+  /** The document whose regions become the template. */
+  documentId: string;
+  /** Defaults to the vendor identifier. */
+  name?: string;
+  /**
+   * Defaults to the text of the document's VENDOR_NAME region — which Week 5
+   * usually filled in already, so saving a template needs no typing.
+   */
+  vendorIdentifier?: string;
+}
+
+export interface UpdateTemplateRequest {
+  name?: string;
+  vendorIdentifier?: string;
+}
+
+/** What applying a template did to one document. */
+export interface TemplateApplication {
+  documentId: string;
+  /** Regions created. Field types the document already had are left alone. */
+  regionsCreated: number;
+  /** Field types skipped because the document already had one. */
+  skipped: FieldType[];
+}
+
+export interface ApplyTemplateRequest {
+  /** Apply to these documents. */
+  documentIds?: string[];
+  /** Or to every document in this batch — "apply to similar documents". */
+  batchId?: string;
+}
+
+export interface ApplyTemplateResponse {
+  templateId: string;
+  applications: TemplateApplication[];
+  /** Total regions created across every document. */
+  regionsCreated: number;
+}
+
+/** How well a template matches a document, without applying it. */
+export interface TemplateSuggestion {
+  template: Template;
+  /** 0-1. */
+  score: number;
+  /** The header line that matched, so the user can see why. */
+  matchedText: string;
 }

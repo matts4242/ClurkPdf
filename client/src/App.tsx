@@ -187,7 +187,7 @@ export default function App() {
         <FileStack className="h-5 w-5 text-sky-600" aria-hidden="true" />
         <h1 className="text-sm font-semibold text-slate-800">Invoice Processor</h1>
         <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-500">
-          Week 5 &middot; Batch queue
+          Week 6 &middot; Templates
         </span>
 
         {connection !== 'open' && (

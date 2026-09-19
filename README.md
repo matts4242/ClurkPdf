@@ -4,11 +4,13 @@ A browser-based tool for digitising paper and PDF invoices. Accounting teams
 upload a batch, mark up the fields they care about, and export structured data.
 
 The build follows the seven-week plan in [`Project_Overview/`](./Project_Overview),
-one vertical slice at a time. **Weeks 1 to 5 are implemented: drop a batch of
+one vertical slice at a time. **Weeks 1 to 6 are implemented: drop a batch of
 PDFs, watch a real queue work through them while the fields each invoice
 declares are filled in automatically, then correct what it found — or mark up
 anything it missed by drawing regions and running OCR, or by highlighting the
-document's own text.** Weeks 6 and 7 add templates and export.
+document's own text. Mark one invoice up by hand and save it as a template, and
+the next invoice from that vendor arrives already filled in.** Week 7 adds
+export.
 
 ## Requirements
 
@@ -114,6 +116,9 @@ them; every value there is already the built-in default.
 | `QUEUE_JOB_TIMEOUT_MS` | `300000` | A job whose process died returns to the queue after this |
 | `EAGER_RENDER_PAGES` | `3` | Pages rendered up front; the rest render on demand |
 | `WS_HEARTBEAT_MS` | `30000` | How often idle WebSocket clients are pinged |
+| `TEMPLATE_MATCH_THRESHOLD` | `0.8` | Vendor match needed to apply a template unasked |
+| `TEMPLATE_SUGGEST_THRESHOLD` | `0.5` | Weaker matches are not even suggested |
+| `TEMPLATE_SNAP_TOLERANCE` | `0.04` | How far a replayed rectangle may search for its text |
 
 The client reads `VITE_SERVER_ORIGIN`, defaulting to `http://localhost:3001`,
 and `VITE_PAGE_DPI`, which must match the server's `PAGE_DPI` so that 100% zoom
@@ -161,6 +166,13 @@ Every endpoint answers with the same envelope, success or failure.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
+| `POST` | `/api/templates` | Save a document's regions as a template |
+| `GET` | `/api/templates` | List saved templates, newest first |
+| `GET` | `/api/templates/:id` | One template and its saved rectangles |
+| `PUT` | `/api/templates/:id` | Rename it, or change the vendor it answers to |
+| `DELETE` | `/api/templates/:id` | Forget the pattern; placed regions stay |
+| `POST` | `/api/templates/:id/apply` | Apply to named documents, or a whole batch |
+| `GET` | `/api/documents/:id/template-suggestions` | Templates that look like this document |
 | `POST` | `/api/batches` | Open a batch to upload into |
 | `GET` | `/api/batches` | List batches, newest first, with their progress |
 | `GET` | `/api/batches/:id` | One batch, its pipeline counts, and its documents |
@@ -191,7 +203,8 @@ Error codes: `FILE_TOO_LARGE` (413), `INVALID_FILE_TYPE` (415),
 `DOCUMENT_NOT_FOUND` (404), `PAGE_NOT_FOUND` (404), `FORBIDDEN` (403),
 `PROCESSING_ERROR` (500), `INTERNAL_ERROR` (500), `REGION_NOT_FOUND` (404),
 `REGION_OUT_OF_BOUNDS` (400), `INVALID_DIMENSIONS` (400), `INVALID_PAGE` (400),
-`INVALID_FIELD_TYPE` (400), `BATCH_NOT_FOUND` (404), `QUEUE_UNAVAILABLE` (503).
+`INVALID_FIELD_TYPE` (400), `BATCH_NOT_FOUND` (404), `QUEUE_UNAVAILABLE` (503),
+`TEMPLATE_NOT_FOUND` (404), `TEMPLATE_EMPTY` (400).
 
 ### OCR
 
@@ -361,6 +374,64 @@ number, and offering three candidates would be worse than offering the best one
 and letting the user redraw it. A scanned page has no text layer and gets
 nothing from here; OCR remains the path for those.
 
+### Templates
+
+Detection guesses at invoices in general. A template is the better guess you
+can make about a vendor you have seen before: someone has already marked that
+layout up by hand, so the rectangles are known and there is nothing to infer.
+
+Save one with `POST /api/templates`, naming a document whose regions become the
+pattern. The vendor identifier defaults to the text of that document's
+`VENDOR_NAME` region — which Week 5 usually filled in already, so saving a
+template for a new vendor is one click with nothing to type.
+
+```jsonc
+{ "template": { "id": "...", "name": "ACME Supply Co",
+                "vendorIdentifier": "ACME Supply Co", "useCount": 3,
+                "regions": [ { "fieldType": "TOTAL", "pageNumber": 1,
+                               "x": 0.7267, "y": 0.4331,
+                               "width": 0.0731, "height": 0.0177 } ] } }
+```
+
+**Matching reads the top third of the page**, where an invoice puts the issuing
+company, and scores every line there against each template's vendor. Above
+`TEMPLATE_MATCH_THRESHOLD` the processing job applies the template by itself;
+between that and `TEMPLATE_SUGGEST_THRESHOLD` it is offered as a suggestion for
+the user to apply. Two things have to be tolerated, so two measures are taken
+and the better wins: wording ("Acme Supply Co" against "Acme Supply Company
+Ltd") by token overlap, and characters (OCR reading "Acme Supp1y Co") by edit
+distance. Legal suffixes are stripped first, so `Ltd` and `Limited` agree —
+and so two unrelated companies are not rewarded for both being limited.
+
+**A template is applied before detection runs**, because it is the stronger
+claim; detection then fills only the fields the template did not cover. Applied
+regions are ordinary `Region` rows marked `autoDetected`, so they carry the
+same "please check" marking, and editing one clears it.
+
+**A replayed rectangle snaps to the text actually underneath it.** This is what
+makes a template survive contact with a real second invoice: an address one
+line longer pushes everything below it down, and a rectangle measured on last
+month's invoice lands between two lines on this month's. When the rectangle
+catches nothing, the search widens vertically by `TEMPLATE_SNAP_TOLERANCE` —
+never horizontally, so it stays in its own column — and takes the nearest line.
+Where two lines are equally near, the one that *reads like* the field being
+placed wins: a `PO_NUMBER` prefers "PO Number: PO-77001" over "Date: 20 April
+2026", which is far more reliable than picking whichever happens to be a
+fraction of a millimetre closer.
+
+Finally, because the field type is known, the captured line is reduced to its
+value: a replayed `TOTAL` stores `1800.00`, not `Total: 1800.00`. An ordinary
+highlight still captures the whole line, which is Week 4's documented
+behaviour.
+
+`POST /api/templates/:id/apply` applies one by hand, to `documentIds` or to a
+whole `batchId` — the spec's "Apply to Similar Documents". It never overwrites
+a field the document already has, so applying twice is a no-op and a template
+can be applied over a partly-corrected document safely.
+
+Deleting a template forgets the pattern only. The regions it already placed are
+ordinary regions on documents someone may have corrected since, so they stay.
+
 ### Duplicate detection
 
 The upload hashes the bytes and reports `duplicateOf` when an earlier document
@@ -371,15 +442,15 @@ is a mistake — so the file is queued and processed like any other.
 ## Testing
 
 ```bash
-npm test               # 158 tests
+npm test               # 218 tests
 ```
 
-- **Server (125)** — HTTP endpoints, PDF rendering, region validation and
+- **Server (185)** — HTTP endpoints, PDF rendering, region validation and
   ownership, OCR, text-layer extraction and snapping, batches, the processing
-  queue, field detection, duplicate detection, WebSocket progress, restart
-  recovery, cascade deletes, and path-traversal defences. Each test runs
-  against a real server on an ephemeral port, a real database, and a real
-  Redis.
+  queue, field detection, templates and vendor matching, duplicate detection,
+  WebSocket progress, restart recovery, cascade deletes, and path-traversal
+  defences. Each test runs against a real server on an ephemeral port, a real
+  database, and a real Redis.
 - **Client (33)** — the coordinate maths, including that a region covers the
   same content at every zoom level, and the processing-event fold.
 
@@ -393,6 +464,11 @@ that would deadlock or never report progress in production does so here too —
 which is how the `jobId` deduplication was caught silently swallowing the
 re-enqueue of a document being recovered after a restart.
 
+The template tests are the same shape and caught the same class of thing: a
+rectangle saved from one invoice and replayed onto a second, where the fields
+sit a line lower, reads nothing at all unless the snap is allowed to search
+beyond the rectangle it was given.
+
 The server suite starts from an empty schema: migrations are applied once, then
 every test truncates. Two guards keep that away from real data. `DATABASE_URL`
 is set explicitly for the run, and `process.loadEnvFile` never overrides an
@@ -401,12 +477,36 @@ development database. On top of that the suite refuses to start unless the
 database name ends in `_test`. The uploads root is likewise a fresh temp
 directory per run, so `server/uploads` is never touched, and each test file
 gets its own random `QUEUE_PREFIX` so a run can never drain a development
-queue or see another file's jobs.
+queue or see another file's jobs. Templates are truncated between tests along
+with documents and batches: a template left behind matches by vendor name, so
+one saved by an earlier test would silently apply itself to a later test's
+upload and make the suite order-dependent.
 
 Test PDFs are generated byte-by-byte in `server/src/test/fixtures.ts`, so no
 binary fixtures are stored in the repository.
 
 ## Notes on the specification
+
+### Week 6
+
+- **No `user_id` on a template.** The spec's `document_templates` table has
+  one, but the project still has no accounts, so a column nothing can populate
+  would be a fiction. The same omission the earlier weeks made.
+- **Region mappings are JSON, not rows.** They are only ever read and written
+  whole, never queried into. What the column cannot guarantee — that the shape
+  is still right — is checked on the way back out, so a hand-edited row gives
+  an empty template rather than a crash.
+- **The template is applied before detection, not instead of it.** The spec
+  describes the two separately; running them in that order means a vendor you
+  know gets the precise answer and everything else still gets the general one.
+- **Snapping a replayed rectangle is the part the spec does not mention**, and
+  it is the part that makes templates work at all. Saved coordinates alone
+  survive only an invoice laid out to the point; see "Templates" above.
+- **The vendor match is scored per line, not over the whole header.** The
+  vendor name is one line, and diluting it with the address and phone number
+  beneath would sink every real match.
+- **Deleting a template leaves its regions.** They stopped belonging to the
+  template the moment they were written; some may have been corrected since.
 
 ### Week 5
 

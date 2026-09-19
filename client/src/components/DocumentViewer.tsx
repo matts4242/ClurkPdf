@@ -23,6 +23,7 @@ import {
 import { FieldTypeSelector } from './FieldTypeSelector';
 import { RegionCanvas } from './RegionCanvas';
 import { RegionList } from './RegionList';
+import { TemplatePanel } from './TemplatePanel';
 import { SelectionToolbar } from './SelectionToolbar';
 import { TextLayer, type TextSelection } from './TextLayer';
 import { useRegions } from '../hooks/useRegions';
@@ -103,6 +104,7 @@ export function DocumentViewer({
     update: updateRegion,
     remove: removeRegion,
     clearError: clearRegionError,
+    reload: reloadRegions,
     runOcr,
     ocrRunning,
   } = useRegions(documentId);
@@ -582,6 +584,21 @@ export function DocumentViewer({
             onRegionRerunOcr={(regionId) => void runOcr({ regionIds: [regionId] })}
             ocrRunning={ocrRunning}
           />
+
+          <div className="mt-4 border-t border-slate-200 pt-3">
+            <TemplatePanel
+              documentId={documentId}
+              regionCount={regions.length}
+              {...(document.templateId === undefined
+                ? {}
+                : { appliedTemplateId: document.templateId })}
+              {...(document.batchId === undefined ? {} : { batchId: document.batchId })}
+              onRegionsChanged={() => {
+                void reloadRegions();
+                onRegionsChangedRef.current?.();
+              }}
+            />
+          </div>
 
           <details className="mt-4 border-t border-slate-200 pt-3">
             <summary className="cursor-pointer text-[11px] font-medium tracking-wide text-slate-400 uppercase">

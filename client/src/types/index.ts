@@ -40,6 +40,10 @@ export interface Document {
   status: DocumentStatus;
   /** How far the processing job has got, 0-100. */
   progress: number;
+  /** Week 6: the template that filled this document's fields in, if one did. */
+  templateId?: string;
+  /** How well the vendor matched, 0-1. Only meaningful with `templateId`. */
+  templateScore?: number;
   thumbnailUrl?: string;
   errorMessage?: string;
   /** SHA-256 of the uploaded bytes. */
@@ -239,6 +243,52 @@ export const PIPELINE_STAGES = [
   { status: 'ready', label: 'Review' },
   { status: 'error', label: 'Failed' },
 ] as const satisfies readonly { status: DocumentStatus; label: string }[];
+
+// ---------------------------------------------------------------------------
+// Week 6: templates
+// ---------------------------------------------------------------------------
+
+/** One saved rectangle in a template. Normalised, so it replays at any size. */
+export interface TemplateRegion extends NormalizedRect {
+  pageNumber: number;
+  fieldType: FieldType;
+  fieldLabel?: string;
+}
+
+export interface Template {
+  id: string;
+  name: string;
+  /** The vendor name this template is recognised by. */
+  vendorIdentifier: string;
+  regions: TemplateRegion[];
+  sourceDocumentId?: string;
+  useCount: number;
+  lastUsedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** How well a template matches a document, without applying it. */
+export interface TemplateSuggestion {
+  template: Template;
+  /** 0-1. */
+  score: number;
+  /** The header line that matched, so the user can see why. */
+  matchedText: string;
+}
+
+/** What applying a template did to one document. */
+export interface TemplateApplication {
+  documentId: string;
+  regionsCreated: number;
+  skipped: FieldType[];
+}
+
+export interface ApplyTemplateResponse {
+  templateId: string;
+  applications: TemplateApplication[];
+  regionsCreated: number;
+}
 
 /** How each document status is drawn on a grid badge. */
 export const STATUS_META: Record<

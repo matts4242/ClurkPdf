@@ -11,6 +11,9 @@ import type {
   FieldType,
   Region,
   RunOcrResponse,
+  ApplyTemplateResponse,
+  Template,
+  TemplateSuggestion,
   TextLayerData,
   UpdateRegionInput,
 } from '../types';
@@ -266,6 +269,70 @@ export function progressSocketUrl(batchId?: string): string {
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   if (batchId !== undefined) url.searchParams.set('batchId', batchId);
   return url.toString();
+}
+
+// ---------------------------------------------------------------------------
+// Templates
+// ---------------------------------------------------------------------------
+
+export interface CreateTemplateInput {
+  documentId: string;
+  name?: string;
+  /** Defaults to the document's vendor-name region on the server. */
+  vendorIdentifier?: string;
+}
+
+/** Save a document's regions as a template for its vendor. */
+export function createTemplate(input: CreateTemplateInput): Promise<Template> {
+  return unwrap<{ template: Template }>(http.post('/templates', input)).then(
+    (payload) => payload.template,
+  );
+}
+
+export function listTemplates(signal?: GenericAbortSignal): Promise<Template[]> {
+  return unwrap<{ templates: Template[] }>(
+    http.get('/templates', signal ? { signal } : {}),
+  ).then((payload) => payload.templates);
+}
+
+export function updateTemplate(
+  id: string,
+  updates: { name?: string; vendorIdentifier?: string },
+): Promise<Template> {
+  return unwrap<{ template: Template }>(http.put(`/templates/${id}`, updates)).then(
+    (payload) => payload.template,
+  );
+}
+
+export function deleteTemplate(id: string): Promise<void> {
+  return unwrap<{ id: string; deleted: boolean }>(http.delete(`/templates/${id}`)).then(
+    () => undefined,
+  );
+}
+
+/**
+ * Apply a template to named documents, or to a whole batch.
+ *
+ * Slower than the other calls — each region reads its text out of the PDF —
+ * so a batch-wide apply gets a longer timeout.
+ */
+export function applyTemplate(
+  id: string,
+  target: { documentIds?: string[]; batchId?: string },
+): Promise<ApplyTemplateResponse> {
+  return unwrap<ApplyTemplateResponse>(
+    http.post(`/templates/${id}/apply`, target, { timeout: 120_000 }),
+  );
+}
+
+/** Templates that look like this document, best first. */
+export function fetchTemplateSuggestions(
+  documentId: string,
+  signal?: GenericAbortSignal,
+): Promise<TemplateSuggestion[]> {
+  return unwrap<{ suggestions: TemplateSuggestion[] }>(
+    http.get(`/documents/${documentId}/template-suggestions`, signal ? { signal } : {}),
+  ).then((payload) => payload.suggestions);
 }
 
 export type { FieldType };

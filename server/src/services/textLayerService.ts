@@ -127,19 +127,120 @@ export async function snapToText(
 
   if (touched.length === 0) return { text: '', rect: null };
 
-  const left = Math.min(...touched.map((item) => item.x));
-  const top = Math.min(...touched.map((item) => item.y));
-  const right = Math.max(...touched.map((item) => item.x + item.width));
-  const bottom = Math.max(...touched.map((item) => item.y + item.height));
-
   return {
     text: joinInReadingOrder(touched, layer.pageHeight),
-    rect: {
-      x: clamp(left),
-      y: clamp(top),
-      width: clamp(right - left, 1 - clamp(left)),
-      height: clamp(bottom - top, 1 - clamp(top)),
-    },
+    rect: boundingBoxOf(touched),
+  };
+}
+
+/**
+ * Snap to the nearest line when the rectangle itself catches nothing.
+ *
+ * Week 6 replays a rectangle saved from one of a vendor's invoices onto
+ * another, and the two are never quite aligned: an address one line longer
+ * pushes everything below it down, and a rectangle that misses its line by
+ * more than a line's height catches no text at all.
+ *
+ * So when the exact rectangle finds nothing, the search widens vertically by
+ * `tolerance` and takes the single nearest line within it. Widening only
+ * vertically is what keeps this honest — the horizontal test still applies, so
+ * the search stays in the rectangle's own column and cannot wander into the
+ * one beside it — and taking the *nearest* line rather than everything in the
+ * band stops a generous tolerance from swallowing the field above as well.
+ *
+ * `tolerance` is 0 for an ordinary highlight: there the user drew the
+ * rectangle over the text they meant, and second-guessing them would be wrong.
+ */
+export async function snapToTextNear(
+  documentId: string,
+  pageNumber: number,
+  rect: NormalizedRect,
+  tolerance: number,
+  options: { prefer?: (text: string) => boolean } = {},
+): Promise<SnappedText> {
+  const exact = await snapToText(documentId, pageNumber, rect);
+  if (exact.text !== '' || tolerance <= 0) return exact;
+
+  const candidates = await linesNear(documentId, pageNumber, rect, tolerance);
+  if (candidates.length === 0) return { text: '', rect: null };
+
+  // Distance alone cannot separate two lines that are equally far — the field
+  // above and the field below, when the layout has shifted by half a line.
+  // `prefer` is how the caller breaks that tie with what it knows: Week 6 is
+  // placing a *named* field, so it can ask for the line that actually reads
+  // like one.
+  const preferred = options.prefer
+    ? candidates.find((candidate) => options.prefer?.(candidate.text) === true)
+    : undefined;
+
+  return preferred ?? (candidates[0] as SnappedText);
+}
+
+/**
+ * Whole lines within `tolerance` of a rectangle, nearest first.
+ *
+ * Only lines that overlap the rectangle horizontally, so the search stays in
+ * its own column rather than wandering into the one beside it.
+ */
+export async function linesNear(
+  documentId: string,
+  pageNumber: number,
+  rect: NormalizedRect,
+  tolerance: number,
+): Promise<{ text: string; rect: NormalizedRect }[]> {
+  const layer = await getTextLayer(documentId, pageNumber);
+
+  const widened: NormalizedRect = {
+    x: rect.x,
+    y: Math.max(0, rect.y - tolerance),
+    width: rect.width,
+    height: rect.height + tolerance * 2,
+  };
+
+  const touching = layer.textItems.filter((item) => touches(item, widened));
+  if (touching.length === 0) return [];
+
+  // Group into lines, the same way the rest of the file does.
+  const sorted = [...touching].sort((a, b) => a.y - b.y || a.x - b.x);
+  const lines: TextItem[][] = [];
+  for (const item of sorted) {
+    const current = lines.at(-1);
+    const previous = current?.at(-1);
+    const lineTolerance = previous ? Math.max(previous.height * 0.5, 0.002) : 0;
+    const sameLine =
+      previous !== undefined && Math.abs(centre(item) - centre(previous)) <= lineTolerance;
+
+    if (sameLine && current) current.push(item);
+    else lines.push([item]);
+  }
+
+  const wantedCentre = rect.y + rect.height / 2;
+
+  return lines
+    .flatMap((items) => {
+      const box = boundingBoxOf(items);
+      const text = joinInReadingOrder(items, layer.pageHeight);
+      if (box === null || text === '') return [];
+      return [{ text, rect: box, distance: Math.abs(box.y + box.height / 2 - wantedCentre) }];
+    })
+    .sort((a, b) => a.distance - b.distance)
+    .map(({ text, rect: box }) => ({ text, rect: box }));
+}
+
+/** The smallest rectangle containing every run, clamped to the page. */
+function boundingBoxOf(items: readonly TextItem[]): NormalizedRect | null {
+  if (items.length === 0) return null;
+
+  const left = Math.min(...items.map((item) => item.x));
+  const top = Math.min(...items.map((item) => item.y));
+  const right = Math.max(...items.map((item) => item.x + item.width));
+  const bottom = Math.max(...items.map((item) => item.y + item.height));
+
+  return {
+    x: clamp(left),
+    y: clamp(top),
+    width: clamp(right - left, 1 - clamp(left)),
+    height: clamp(bottom - top, 1 - clamp(top)),
   };
 }
 

@@ -15,6 +15,8 @@ export interface UseRegionsReturn {
   update: (regionId: string, updates: UpdateRegionInput) => Promise<Region | null>;
   remove: (regionId: string) => Promise<boolean>;
   clearError: () => void;
+  /** Fetch the region list again, after something else changed it server-side. */
+  reload: () => Promise<void>;
   /** Recognise text in some or all regions. */
   runOcr: (options?: { regionIds?: string[]; onlyPending?: boolean }) => Promise<OcrSummary | null>;
   /** True while a recognition run is in flight. */
@@ -41,29 +43,42 @@ export function useRegions(documentId: string | null): UseRegionsReturn {
     };
   }, []);
 
-  useEffect(() => {
-    if (!documentId) {
-      setRegions([]);
-      return;
-    }
+  /**
+   * Fetch the document's regions afresh.
+   *
+   * Exposed as well as run on mount, because Week 6 can add regions without
+   * this hook doing it: applying a template creates them server-side, so the
+   * list has to be asked for again rather than patched locally.
+   */
+  const reload = useCallback(
+    async (signal?: AbortSignal): Promise<void> => {
+      if (!documentId) {
+        setRegions([]);
+        return;
+      }
 
-    const controller = new AbortController();
-    setError(null);
-
-    api
-      .listRegions(documentId, undefined, controller.signal)
-      .then((loaded) => {
-        if (mountedRef.current) setRegions(loaded);
-      })
-      .catch((caught: unknown) => {
+      try {
+        const loaded = await api.listRegions(documentId, undefined, signal);
+        if (mountedRef.current) {
+          setRegions(loaded);
+          setError(null);
+        }
+      } catch (caught: unknown) {
         if (caught instanceof ApiRequestError && caught.code === 'CANCELLED') return;
         if (mountedRef.current) {
           setError(caught instanceof Error ? caught.message : 'Could not load regions');
         }
-      });
+      }
+    },
+    [documentId],
+  );
 
+  useEffect(() => {
+    const controller = new AbortController();
+    setError(null);
+    void reload(controller.signal);
     return () => controller.abort();
-  }, [documentId]);
+  }, [reload]);
 
   const describe = (caught: unknown, fallback: string): string =>
     caught instanceof Error ? caught.message : fallback;
@@ -175,5 +190,5 @@ export function useRegions(documentId: string | null): UseRegionsReturn {
     [documentId],
   );
 
-  return { regions, error, create, update, remove, clearError, runOcr, ocrRunning };
+  return { regions, error, create, update, remove, clearError, reload, runOcr, ocrRunning };
 }

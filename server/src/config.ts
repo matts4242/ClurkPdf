@@ -20,6 +20,12 @@ const int = (value: string | undefined, fallback: number): number => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
+/** A 0-1 fraction. Anything outside that range is a typo, so fall back. */
+const ratio = (value: string | undefined, fallback: number): number => {
+  const parsed = Number.parseFloat(value ?? '');
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : fallback;
+};
+
 export const config = {
   port: int(process.env.PORT, 3001),
 
@@ -109,6 +115,31 @@ export const config = {
 
   /** How often the WebSocket server pings idle clients to prune dead sockets. */
   wsHeartbeatMs: int(process.env.WS_HEARTBEAT_MS, 30_000),
+
+  // --- Week 6: templates ---
+
+  /**
+   * How well a page's header must match a template's vendor before the
+   * template is applied without being asked. The spec says 80%.
+   *
+   * Below this a template can still be suggested and applied by hand, which is
+   * what `GET /api/documents/:id/template-suggestions` is for.
+   */
+  templateMatchThreshold: ratio(process.env.TEMPLATE_MATCH_THRESHOLD, 0.8),
+
+  /** Weaker matches than this are not even offered as a suggestion. */
+  templateSuggestThreshold: ratio(process.env.TEMPLATE_SUGGEST_THRESHOLD, 0.5),
+
+  /**
+   * How far a replayed template rectangle may search for its text, as a
+   * fraction of page height, when it lands on nothing.
+   *
+   * Two invoices from one vendor are never aligned to the point: an address a
+   * line longer pushes everything below it down. The default is roughly two
+   * lines of 12pt text on an A4 page — enough to follow that drift, small
+   * enough that the search cannot reach the field above or below.
+   */
+  templateSnapTolerance: ratio(process.env.TEMPLATE_SNAP_TOLERANCE, 0.04),
 
   isProduction: process.env.NODE_ENV === 'production',
 

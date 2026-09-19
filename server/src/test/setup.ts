@@ -56,9 +56,14 @@ if (!databaseName.endsWith('_test')) {
 const { getPrisma, disconnectDatabase } = await import('../db/client.js');
 
 beforeEach(async () => {
-  // Regions cascade from documents, so one truncate clears both. Batches are
-  // separate — a document's batch link is SetNull, not a cascade.
-  await getPrisma().$executeRawUnsafe('TRUNCATE "Document", "Batch" CASCADE');
+  // Regions cascade from documents, so one truncate clears both. Batches and
+  // templates are separate — a document's link to either is SetNull, not a
+  // cascade.
+  //
+  // Templates especially must go: a leftover one matches by vendor name, so a
+  // template saved by one test would silently apply itself to a later test's
+  // upload and make the suite order-dependent.
+  await getPrisma().$executeRawUnsafe('TRUNCATE "Document", "Batch", "Template" CASCADE');
 });
 
 afterAll(async () => {

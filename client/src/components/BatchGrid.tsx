@@ -1,4 +1,4 @@
-import { AlertCircle, Copy, FileText, Loader2, Sparkles, Trash2 } from 'lucide-react';
+import { AlertCircle, Bookmark, Copy, FileText, Loader2, Sparkles, Trash2 } from 'lucide-react';
 import { absoluteUrl } from '../api/client';
 import type { Document } from '../types';
 import { STATUS_META } from '../types';
@@ -121,6 +121,22 @@ function DocumentCard({ document, selected, detected, onSelect, onDelete }: Docu
               >
                 <Sparkles className="h-2.5 w-2.5" aria-hidden="true" />
                 {detected}
+              </span>
+            )}
+
+            {document.templateId !== undefined && (
+              <span
+                className="inline-flex items-center gap-0.5 rounded-full bg-indigo-100 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700"
+                title={
+                  document.templateScore === undefined
+                    ? 'Filled in from a saved template'
+                    : `Filled in from a saved template (${Math.round(
+                        document.templateScore * 100,
+                      )}% vendor match)`
+                }
+              >
+                <Bookmark className="h-2.5 w-2.5" aria-hidden="true" />
+                Template
               </span>
             )}
 

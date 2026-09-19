@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { detectFields } from '../services/fieldDetector.js';
+import { detectFields, extractValue, looksLikeField } from '../services/fieldDetector.js';
 import type { DetectedField, FieldType, TextItem, TextLayer } from '../types/index.js';
 
 /**
@@ -211,5 +211,70 @@ describe('detected rectangles', () => {
     // ends with the run. Exact widths depend on the font; the ordering does not.
     expect(rect!.x).toBeGreaterThan(0.5);
     expect(rect!.x + rect!.width).toBeCloseTo(0.7, 3);
+  });
+});
+
+/**
+ * The two helpers Week 6 leans on when it replays a saved rectangle onto a new
+ * invoice: one to tell whether a line is the field being placed, the other to
+ * keep the value and drop the label.
+ */
+
+describe('extractValue', () => {
+  it('drops the label and keeps the value', () => {
+    expect(extractValue('TOTAL', 'Total: 1800.00')).toBe('1800.00');
+    expect(extractValue('INVOICE_NUMBER', 'Invoice No: INV-2026-0099')).toBe('INV-2026-0099');
+    expect(extractValue('PO_NUMBER', 'PO Number: PO-77001')).toBe('PO-77001');
+    expect(extractValue('DUE_DATE', 'Due Date: 2026-04-13')).toBe('2026-04-13');
+  });
+
+  it('leaves a value that is already on its own', () => {
+    expect(extractValue('TOTAL', '1800.00')).toBe('1800.00');
+    expect(extractValue('INVOICE_DATE', '2026-03-14')).toBe('2026-03-14');
+  });
+
+  it('prefers the more specific label when both are present', () => {
+    expect(extractValue('TOTAL', 'Amount Due: 1500.00')).toBe('1500.00');
+  });
+
+  it('leaves a field that has no labels to strip', () => {
+    expect(extractValue('VENDOR_NAME', 'ACME Supply Co')).toBe('ACME Supply Co');
+  });
+
+  it('leaves a multi-line capture whole', () => {
+    // Line items are content, not a label and a value.
+    const lines = 'Consulting services 1200.00\nHardware rental 600.00';
+    expect(extractValue('LINE_ITEMS', lines)).toBe(lines);
+  });
+
+  it('leaves text it cannot parse', () => {
+    expect(extractValue('TOTAL', 'see attached schedule')).toBe('see attached schedule');
+    expect(extractValue('TOTAL', '   ')).toBe('');
+  });
+});
+
+describe('looksLikeField', () => {
+  it('recognises the field it is asked about', () => {
+    expect(looksLikeField('PO_NUMBER', 'PO Number: PO-77001')).toBe(true);
+    expect(looksLikeField('TOTAL', 'Total: 1800.00')).toBe(true);
+  });
+
+  it('rejects a neighbouring field', () => {
+    // The case that made a replayed rectangle pick the line above its own.
+    expect(looksLikeField('PO_NUMBER', 'Date: 20 April 2026')).toBe(false);
+    expect(looksLikeField('TOTAL', 'Invoice No: INV-2026-0099')).toBe(false);
+  });
+
+  it('rejects a label with no value after it', () => {
+    expect(looksLikeField('TOTAL', 'Total')).toBe(false);
+  });
+
+  it('is false for a field with nothing to recognise', () => {
+    // No patterns, so the caller falls back to distance.
+    expect(looksLikeField('VENDOR_NAME', 'ACME Supply Co')).toBe(false);
+  });
+
+  it('is false for empty text', () => {
+    expect(looksLikeField('TOTAL', '   ')).toBe(false);
   });
 });

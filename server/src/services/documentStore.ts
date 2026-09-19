@@ -33,6 +33,8 @@ export const thumbnailUrl = (id: string): string => `/uploads/${id}/thumbnail.pn
 type DocumentRow = {
   id: string;
   batchId: string | null;
+  templateId: string | null;
+  templateScore: number | null;
   filename: string;
   originalName: string;
   mimeType: string;
@@ -60,6 +62,8 @@ export function toDocument(row: DocumentRow): Document {
     status: row.status as DocumentStatus,
     progress: row.progress,
     ...(row.batchId === null ? {} : { batchId: row.batchId }),
+    ...(row.templateId === null ? {} : { templateId: row.templateId }),
+    ...(row.templateScore === null ? {} : { templateScore: row.templateScore }),
     ...(row.thumbnailUrl === null ? {} : { thumbnailUrl: row.thumbnailUrl }),
     ...(row.errorMessage === null ? {} : { errorMessage: row.errorMessage }),
     ...(row.contentHash === null ? {} : { contentHash: row.contentHash }),

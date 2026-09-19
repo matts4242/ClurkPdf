@@ -83,6 +83,17 @@ export const invalidPage = (pageNumber: number, pageCount: number): AppError =>
 export const invalidFieldType = (received: unknown): AppError =>
   new AppError('INVALID_FIELD_TYPE', 'Unknown field type', 400, { received });
 
+export const templateNotFound = (id: string): AppError =>
+  new AppError('TEMPLATE_NOT_FOUND', `No template with id ${id}`, 404, { id });
+
+export const templateEmpty = (documentId: string): AppError =>
+  new AppError(
+    'TEMPLATE_EMPTY',
+    'This document has no regions to save as a template',
+    400,
+    { documentId },
+  );
+
 export const batchNotFound = (id: string): AppError =>
   new AppError('BATCH_NOT_FOUND', `No batch with id ${id}`, 404, { id });
 

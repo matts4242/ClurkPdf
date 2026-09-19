@@ -6,6 +6,7 @@ import type { DetectedField, Document } from '../types/index.js';
 import { detectFields } from './fieldDetector.js';
 import * as batches from './batchService.js';
 import * as store from './documentStore.js';
+import * as templates from './templateService.js';
 import { convertPageToImage, renderPageToPng } from './pdfService.js';
 import { getTextLayer } from './textLayerService.js';
 
@@ -131,25 +132,33 @@ async function renderPages(document: Document): Promise<number> {
 }
 
 /**
- * Read the fields the document declares and save them as regions.
+ * Fill in the document's fields: a matching template first, then detection.
  *
- * Only page 1: invoice headers and totals live there, and scanning every page
- * of a long document for a second "Total" would produce worse guesses, not
- * more of them.
+ * Both work off page 1. Invoice headers and totals live there, and scanning
+ * every page of a long document for a second "Total" would produce worse
+ * guesses, not more of them — and page 1 is where the vendor name a template
+ * is recognised by sits too.
  */
 async function detectAndSaveFields(document: Document): Promise<number> {
   const { id, batchId } = document;
 
   const layer = await getTextLayer(id, 1);
-  // A scan has no text layer. Nothing to detect; OCR is the path for those.
+  // A scan has no text layer. Nothing to detect and no vendor to recognise;
+  // OCR is the path for those.
   if (!layer.hasText) {
     await store.setProgress(id, RENDER_SHARE + DETECT_SHARE);
     await announce(batchId ?? null, id, RENDER_SHARE + DETECT_SHARE);
     return 0;
   }
 
+  // Week 6: a template first. Someone has already marked this vendor's layout
+  // up by hand, which beats inferring it from labels — so detection is left to
+  // fill in only what the template did not cover.
+  const fromTemplate = await applyMatchingTemplate(document);
+
   // Re-uploading over a document a user has already worked on must not
-  // duplicate the fields they drew themselves.
+  // duplicate the fields they drew themselves — nor the ones the template just
+  // placed.
   const existing = await getPrisma().region.findMany({
     where: { documentId: id },
     select: { fieldType: true },
@@ -167,7 +176,35 @@ async function detectAndSaveFields(document: Document): Promise<number> {
 
   await store.setProgress(id, RENDER_SHARE + DETECT_SHARE);
   await announce(batchId ?? null, id, RENDER_SHARE + DETECT_SHARE);
-  return found.length;
+  return fromTemplate + found.length;
+}
+
+/**
+ * Apply the best-matching template, if one clears the threshold.
+ *
+ * Returns how many regions it placed. A failure here is swallowed rather than
+ * raised: detection still runs, and a document with no template applied is
+ * exactly the Week 5 behaviour, so there is nothing to fail the job over.
+ */
+async function applyMatchingTemplate(document: Document): Promise<number> {
+  const { id } = document;
+
+  try {
+    const match = await templates.bestMatch(id, config.templateMatchThreshold);
+    if (!match) return 0;
+
+    const applied = await templates.applyToDocument(match.template.id, id);
+    if (applied.regionsCreated === 0) return 0;
+
+    await templates.recordMatchScore(id, match.score);
+    return applied.regionsCreated;
+  } catch (error) {
+    console.error(
+      `[process] template matching failed for ${id}:`,
+      error instanceof Error ? error.message : error,
+    );
+    return 0;
+  }
 }
 
 /**
