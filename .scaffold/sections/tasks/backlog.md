@@ -145,13 +145,107 @@ so recovering a document that had already completed once left it queued for
 ever. And the amount pattern matched `504` out of `5040.00`, because with the
 group separators optional the `.00` was neither a group nor a decimal part.
 
-## Weeks 6-7
+## Week 6 — Templates
 
-Not started. One line of intent each in `Project_Overview/Week 6.1` and
-`Week 7.1`: templates, export.
+- [x] `Template` model holding the vendor identifier and the saved rectangles
+      as JSON, plus `Document.templateId` and `templateScore`
+- [x] Save a document's regions as a template; the vendor identifier defaults
+      to its VENDOR_NAME region, so Week 5's detection feeds Week 6 and saving
+      needs no typing
+- [x] `vendorMatcher`: read the top third of page 1 and score it against each
+      template's vendor, applying above the spec's 80%
+- [x] The processing job applies a matching template before detection runs, so
+      the stronger claim wins and detection fills only what is left
+- [x] `POST /api/templates/:id/apply` for one document or a whole batch — the
+      spec's "Apply to Similar Documents"
+- [x] `GET /api/documents/:id/template-suggestions` for matches too weak to
+      apply on their own
+- [x] `TemplatePanel` in the viewer: save, suggest, apply, delete; a Template
+      badge on the grid card
 
-Week 6 builds on Week 5's detection: a template is the same idea keyed to a
-known vendor rather than to a regex, and `autoDetected` already marks which
-regions came from a machine. Week 7's export is the first point where the two
-capture modes have to produce one flat row per document; because both already
-write to `Region`, that should be a single query rather than a merge.
+Also delivered:
+
+- [x] A replayed rectangle **snaps to the text actually underneath it** on the
+      new invoice, so a layout that shifted by a line still reads correctly
+- [x] When the search has to widen, the line that *reads like* the field being
+      placed wins over the one that merely sits nearest
+- [x] `extractValue` strips the label from a captured line, so a replayed
+      TOTAL stores `1800.00` rather than `Total: 1800.00`
+- [x] Applying never overwrites a field the document already has, and applying
+      twice is a no-op
+- [x] A template outlives the document it was learned from, and deleting a
+      template leaves the regions it already placed
+- [x] 60 new server tests; 218 across the project
+
+Deviation from the spec, recorded in the README: no `user_id` on the template,
+because the project still has no accounts — the same omission the earlier weeks
+made.
+
+Two bugs found while testing this slice, both in the replay path. A rectangle
+saved from one invoice and replayed onto another caught no text at all when the
+layout had shifted by more than a line, because snapping only ever looked
+inside the rectangle it was given. And once the search was widened, two lines
+equidistant from the saved rectangle — the field above and the field below —
+were separated only by which came first in document order, so a PO number
+quietly picked up a date.
+
+## Week 7 — Export
+
+- [x] `exportService` flattens documents and regions to one row each. The two
+      capture modes needed no merging: both already write to `Region`, so it
+      is one query and a pivot, exactly as predicted
+- [x] Four formats — CSV (fast-csv), XLSX, JSON, XML — all off the same rows,
+      so no two can disagree
+- [x] `GET /api/batches/:id/export?format=…` and `GET /api/exports?…` for an
+      arbitrary selection
+- [x] Field validation: amounts and dates parsed, with both separator
+      conventions and both date orders handled
+- [x] Cross-field validation: subtotal plus tax against the total, and a due
+      date against its invoice date
+- [x] `ExportPanel`: a preview with the checks shown, before anything
+      downloads
+
+Also delivered:
+
+- [x] A minimal XLSX writer — ZIP framing and sheet XML — with no dependency.
+      Amounts are numbers, dates are dates, and an invoice number keeps its
+      leading zeros, which is the whole reason to offer it beside CSV
+- [x] CSV carries a byte-order mark, so a spreadsheet reads UTF-8 rather than
+      guessing at the system codepage
+- [x] XML carries a normalised `value` attribute beside what was printed, so
+      an ERP reads `1500.00` while an auditor still sees `1,500.00`
+- [x] Ambiguity is reported, not guessed: `03/04/2026` parses but marks itself
+      ambiguous, and the due-date ordering check declines to fire on one
+- [x] Custom fields become their own columns, named by the user's own labels
+- [x] 66 new server tests and 9 new client tests; 293 across the project
+
+Deviations from the spec, recorded in the README: the export hangs off
+`/api/batches/:id` rather than the spec's `/api/documents/batch/:batchId`,
+which reads as a document sub-resource but is a batch operation; and Excel is
+written directly rather than with a library, because the maintained SheetJS is
+not on npm and ExcelJS brings nine transitive packages — one of them flagged —
+to write a single flat sheet. QuickBooks and Xero are not built: they need
+OAuth credentials and a live external account, which is a different kind of
+work from this week.
+
+Three bugs found while testing this slice. The XLSX date epoch is two days
+before 1900-01-01, not one, because spreadsheets believe 1900 was a leap year.
+The JSON download button did nothing, because JSON is served inline for the
+preview and a link's `download` attribute is ignored across origins — the
+header is what actually downloads a file. And XML emitted `<issues>` twice,
+once as a flat column and again as the structured block.
+
+## The plan is complete
+
+All seven weeks of `Project_Overview/` are implemented. Natural next steps, in
+rough order of value:
+
+- **An audit trail.** The spec asks for a timestamped log of extractions and
+  corrections. Every write already goes through a service, so the hooks exist;
+  what is missing is the table and a decision about retention.
+- **QuickBooks and Xero.** The remaining export targets, and the only part of
+  the spec still untouched.
+- **Accounts.** `user_id` is absent from every table for the same reason each
+  week recorded: there is nothing to put in it yet. Multi-tenancy is the change
+  that would touch the most existing code, so it is worth doing deliberately
+  rather than incidentally.

@@ -11,6 +11,11 @@ import type {
   FieldType,
   Region,
   RunOcrResponse,
+  ApplyTemplateResponse,
+  ExportFormat,
+  ExportPayload,
+  Template,
+  TemplateSuggestion,
   TextLayerData,
   UpdateRegionInput,
 } from '../types';
@@ -266,6 +271,138 @@ export function progressSocketUrl(batchId?: string): string {
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   if (batchId !== undefined) url.searchParams.set('batchId', batchId);
   return url.toString();
+}
+
+// ---------------------------------------------------------------------------
+// Templates
+// ---------------------------------------------------------------------------
+
+export interface CreateTemplateInput {
+  documentId: string;
+  name?: string;
+  /** Defaults to the document's vendor-name region on the server. */
+  vendorIdentifier?: string;
+}
+
+/** Save a document's regions as a template for its vendor. */
+export function createTemplate(input: CreateTemplateInput): Promise<Template> {
+  return unwrap<{ template: Template }>(http.post('/templates', input)).then(
+    (payload) => payload.template,
+  );
+}
+
+export function listTemplates(signal?: GenericAbortSignal): Promise<Template[]> {
+  return unwrap<{ templates: Template[] }>(
+    http.get('/templates', signal ? { signal } : {}),
+  ).then((payload) => payload.templates);
+}
+
+export function updateTemplate(
+  id: string,
+  updates: { name?: string; vendorIdentifier?: string },
+): Promise<Template> {
+  return unwrap<{ template: Template }>(http.put(`/templates/${id}`, updates)).then(
+    (payload) => payload.template,
+  );
+}
+
+export function deleteTemplate(id: string): Promise<void> {
+  return unwrap<{ id: string; deleted: boolean }>(http.delete(`/templates/${id}`)).then(
+    () => undefined,
+  );
+}
+
+/**
+ * Apply a template to named documents, or to a whole batch.
+ *
+ * Slower than the other calls — each region reads its text out of the PDF —
+ * so a batch-wide apply gets a longer timeout.
+ */
+export function applyTemplate(
+  id: string,
+  target: { documentIds?: string[]; batchId?: string },
+): Promise<ApplyTemplateResponse> {
+  return unwrap<ApplyTemplateResponse>(
+    http.post(`/templates/${id}/apply`, target, { timeout: 120_000 }),
+  );
+}
+
+/** Templates that look like this document, best first. */
+export function fetchTemplateSuggestions(
+  documentId: string,
+  signal?: GenericAbortSignal,
+): Promise<TemplateSuggestion[]> {
+  return unwrap<{ suggestions: TemplateSuggestion[] }>(
+    http.get(`/documents/${documentId}/template-suggestions`, signal ? { signal } : {}),
+  ).then((payload) => payload.suggestions);
+}
+
+// ---------------------------------------------------------------------------
+// Export
+// ---------------------------------------------------------------------------
+
+export interface ExportScope {
+  /** Export one batch. */
+  batchId?: string;
+  /** Or only these documents. Ignored when `batchId` is given. */
+  documentIds?: string[];
+  /** Include documents the queue has not finished with. */
+  includeUnprocessed?: boolean;
+}
+
+/**
+ * URL of an export.
+ *
+ * Built rather than fetched for the file formats: a download is a navigation,
+ * not an XHR — letting the browser fetch it means the file never passes
+ * through JavaScript and the Save dialog behaves the way the user expects.
+ */
+export function exportUrl(
+  scope: ExportScope,
+  format: ExportFormat,
+  options: { download?: boolean } = {},
+): string {
+  const base =
+    scope.batchId === undefined
+      ? `${SERVER_ORIGIN}/api/exports`
+      : `${SERVER_ORIGIN}/api/batches/${scope.batchId}/export`;
+
+  const url = new URL(base);
+  url.searchParams.set('format', format);
+  if (scope.batchId === undefined && scope.documentIds !== undefined) {
+    url.searchParams.set('documentIds', scope.documentIds.join(','));
+  }
+  if (scope.includeUnprocessed === true) {
+    url.searchParams.set('includeUnprocessed', 'true');
+  }
+  // JSON is served inline unless asked for as a file, because the preview
+  // fetches it. The other formats are attachments either way.
+  if (options.download === true) {
+    url.searchParams.set('download', '1');
+  }
+  return url.toString();
+}
+
+/**
+ * The export as data, for the preview.
+ *
+ * JSON is the only format that comes back through here; the rest are
+ * downloads and never touch this code.
+ */
+export async function fetchExport(
+  scope: ExportScope,
+  signal?: GenericAbortSignal,
+): Promise<ExportPayload> {
+  try {
+    const { data } = await http.get<ExportPayload>(exportUrl(scope, 'json'), {
+      // The URL is already absolute, so it must not be prefixed again.
+      baseURL: '',
+      ...(signal ? { signal } : {}),
+    });
+    return data;
+  } catch (error) {
+    throw new ApiRequestError(toApiError(error));
+  }
 }
 
 export type { FieldType };

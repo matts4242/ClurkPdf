@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { FileStack, Trash2, WifiOff } from 'lucide-react';
+import { Download, FileStack, Trash2, WifiOff } from 'lucide-react';
 import { BatchGrid } from './components/BatchGrid';
+import { ExportPanel } from './components/ExportPanel';
 import { BatchProgress } from './components/BatchProgress';
 import { DocumentViewer } from './components/DocumentViewer';
 import { FileDropzone } from './components/FileDropzone';
@@ -87,6 +88,7 @@ export default function App() {
   // The batch currently being watched. Undefined outside an upload, when the
   // socket listens to everything instead.
   const [watchedBatchId, setWatchedBatchId] = useState<string | undefined>(undefined);
+  const [exporting, setExporting] = useState(false);
 
   // Documents already on the server survive a reload, so list them once.
   useEffect(() => {
@@ -181,13 +183,16 @@ export default function App() {
   const selected = documents.find((document) => document.id === selectedId);
   const canOpen = selected?.status === 'ready';
 
+  // Only a processed document has fields to export.
+  const readyCount = documents.filter((document) => document.status === 'ready').length;
+
   return (
     <div className="flex h-full flex-col">
       <header className="flex items-center gap-2 border-b border-slate-200 bg-white px-5 py-3">
         <FileStack className="h-5 w-5 text-sky-600" aria-hidden="true" />
         <h1 className="text-sm font-semibold text-slate-800">Invoice Processor</h1>
         <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-500">
-          Week 5 &middot; Batch queue
+          Week 7 &middot; Export
         </span>
 
         {connection !== 'open' && (
@@ -203,6 +208,25 @@ export default function App() {
         <span className="ml-auto text-xs text-slate-400">
           {documents.length} {documents.length === 1 ? 'document' : 'documents'}
         </span>
+
+        {/* The spec puts Export in the header, and that is where it belongs:
+            it acts on the whole batch, not on the document being looked at. */}
+        <button
+          type="button"
+          onClick={() => setExporting(true)}
+          disabled={readyCount === 0}
+          title={
+            readyCount === 0
+              ? 'Nothing processed to export yet'
+              : batch === null
+                ? 'Export every processed document'
+                : `Export ${batch.name}`
+          }
+          className="inline-flex items-center gap-1.5 rounded-lg bg-slate-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+        >
+          <Download className="h-3.5 w-3.5" aria-hidden="true" />
+          Export
+        </button>
       </header>
 
       <main className="grid min-h-0 flex-1 gap-4 p-4 lg:grid-cols-[24rem_1fr]">
@@ -260,6 +284,15 @@ export default function App() {
           )}
         </div>
       </main>
+
+      {exporting && (
+        <ExportPanel
+          // Scoped to the batch on screen when there is one, so "Export" means
+          // this upload rather than everything ever processed.
+          scope={batch === null ? {} : { batchId: batch.id }}
+          onClose={() => setExporting(false)}
+        />
+      )}
     </div>
   );
 }

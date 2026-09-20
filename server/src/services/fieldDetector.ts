@@ -162,6 +162,73 @@ export function detectFields(layer: TextLayer, options: DetectOptions = {}): Det
   return [...best.values()].map((entry) => entry.field);
 }
 
+/**
+ * Narrow a captured line to just the value of one field.
+ *
+ * Week 6 replays a saved rectangle onto a new invoice and snaps it to the text
+ * underneath, which comes back as the whole run — "Total: 1800.00", because
+ * pdf.js emits a line as one run. The field type is known, though, so the
+ * label can be stripped the same way detection strips it, leaving the value
+ * that Week 7's export actually wants.
+ *
+ * Returns `text` unchanged when there is nothing to strip: a field with no
+ * patterns (a vendor name), a value already on its own, or a multi-line
+ * capture, where the lines are the content rather than a label and a value.
+ */
+export function extractValue(fieldType: FieldType, text: string): string {
+  const trimmed = text.trim();
+  if (trimmed === '' || trimmed.includes('\n')) return trimmed;
+
+  const candidates = PATTERNS.filter((pattern) => pattern.fieldType === fieldType).sort(
+    (a, b) => b.weight - a.weight,
+  );
+  if (candidates.length === 0) return trimmed;
+
+  for (const pattern of candidates) {
+    const labelMatch = pattern.label.exec(trimmed);
+    if (!labelMatch) continue;
+
+    const after = trimmed.slice(labelMatch.index + labelMatch[0].length);
+    const value = anchoredValue(pattern.value, after);
+    if (value) return value.text;
+  }
+
+  // No label, so the line may already be nothing but the value.
+  for (const pattern of candidates) {
+    const bare = anchoredValue(pattern.value, trimmed);
+    if (bare && bare.text === trimmed) return trimmed;
+  }
+
+  return trimmed;
+}
+
+/**
+ * Does this line read like the named field?
+ *
+ * Used when a replayed template rectangle lands between two lines and distance
+ * alone cannot say which was meant. "PO Number: PO-77001" reads like a
+ * PO_NUMBER and "Date: 20 April 2026" does not, which is the whole of the
+ * disambiguation — and far more reliable than picking whichever line happens
+ * to be a fraction of a millimetre closer.
+ *
+ * False for a field with no patterns, such as a vendor name: there is nothing
+ * to recognise, so the caller falls back to distance.
+ */
+export function looksLikeField(fieldType: FieldType, text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed === '') return false;
+
+  const candidates = PATTERNS.filter((pattern) => pattern.fieldType === fieldType);
+  if (candidates.length === 0) return false;
+
+  return candidates.some((pattern) => {
+    const labelMatch = pattern.label.exec(trimmed);
+    if (!labelMatch) return false;
+    const after = trimmed.slice(labelMatch.index + labelMatch[0].length);
+    return anchoredValue(pattern.value, after) !== null;
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Matching
 // ---------------------------------------------------------------------------

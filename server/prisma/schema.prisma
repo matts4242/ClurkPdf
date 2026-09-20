@@ -33,9 +33,44 @@ model Batch {
   @@index([createdAt])
 }
 
+/// A saved extraction pattern for a recurring vendor.
+///
+/// Week 6. Once someone has marked up one invoice from a vendor, every later
+/// invoice from that vendor has its fields in the same places — so the work is
+/// saved as a template, recognised by the vendor's name in the page header,
+/// and replayed onto the next one.
+model Template {
+  id               String    @id @default(uuid()) @db.Uuid
+  name             String
+  /// The vendor name this template is recognised by, matched against the text
+  /// at the top of a page. Usually taken from the source document's
+  /// VENDOR_NAME region.
+  vendorIdentifier String
+  /// The saved rectangles, as `TemplateRegion[]`. JSON rather than rows
+  /// because they are only ever read and written whole, never queried into.
+  regionMappings   Json
+  /// The document this was learned from, kept for provenance. Null once that
+  /// document is deleted — the template outlives it, which is the point.
+  sourceDocumentId String?   @db.Uuid
+  /// How many documents this template has filled in, and when it last did.
+  useCount         Int       @default(0)
+  lastUsedAt       DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  documents        Document[]
+
+  @@index([vendorIdentifier])
+  @@index([createdAt])
+}
+
 model Document {
   id           String         @id @default(uuid()) @db.Uuid
   batchId      String?        @db.Uuid
+  /// The template that filled this document's fields in, if one matched.
+  templateId   String?        @db.Uuid
+  /// How well the vendor matched, 0-1. Only meaningful with `templateId`.
+  templateScore Float?
   filename     String
   originalName String
   mimeType     String
@@ -56,8 +91,10 @@ model Document {
 
   regions      Region[]
   batch        Batch?         @relation(fields: [batchId], references: [id], onDelete: SetNull)
+  template     Template?      @relation(fields: [templateId], references: [id], onDelete: SetNull)
 
   @@index([status])
+  @@index([templateId])
   @@index([createdAt])
   @@index([batchId])
   @@index([contentHash])

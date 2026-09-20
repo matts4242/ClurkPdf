@@ -7,6 +7,8 @@ import { connectedClients } from './events/wsServer.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { batchesRouter } from './routes/batches.js';
 import { documentsRouter } from './routes/documents.js';
+import { exportsRouter } from './routes/exports.js';
+import { templatesRouter } from './routes/templates.js';
 import { forbidden } from './utils/errors.js';
 
 /**
@@ -79,6 +81,8 @@ export function createApp(): Express {
 
   app.use('/api/documents', documentsRouter);
   app.use('/api/batches', batchesRouter);
+  app.use('/api/templates', templatesRouter);
+  app.use('/api/exports', exportsRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);

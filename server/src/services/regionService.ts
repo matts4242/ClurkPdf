@@ -1,5 +1,6 @@
 import { getPrisma } from '../db/client.js';
-import { snapToText } from './textLayerService.js';
+import { extractValue, looksLikeField } from './fieldDetector.js';
+import { snapToTextNear } from './textLayerService.js';
 import type {
   CreateRegionRequest,
   FieldType,
@@ -125,9 +126,39 @@ async function getPageCount(documentId: string): Promise<number> {
   return document.pageCount;
 }
 
+/**
+ * Options the server sets, which a request may not.
+ *
+ * `autoDetected` says a machine placed this region and it is waiting to be
+ * checked. That is the server's judgement about its own work — Week 5's
+ * detector or Week 6's template replay — so it is a separate argument rather
+ * than a field on `CreateRegionRequest`, where a browser could claim it.
+ */
+export interface CreateRegionOptions {
+  autoDetected?: boolean;
+  /**
+   * How far, as a fraction of page height, to search beyond the rectangle when
+   * it catches no text at all.
+   *
+   * 0 for anything a person drew: they put the rectangle over the words they
+   * meant. Non-zero only for a rectangle replayed from a template, which was
+   * measured on a different invoice and will not line up exactly with this one.
+   */
+  snapTolerance?: number;
+  /**
+   * Strip the field's label from the captured text, keeping the value.
+   *
+   * Off for a highlight, where Week 4's documented behaviour is to capture the
+   * whole line the user touched. On for a template replay, which knows what
+   * field it is placing and so knows what part of the line is the value.
+   */
+  extractValue?: boolean;
+}
+
 export async function createRegion(
   documentId: string,
   data: CreateRegionRequest,
+  options: CreateRegionOptions = {},
 ): Promise<Region> {
   const pageCount = await getPageCount(documentId);
 
@@ -144,7 +175,9 @@ export async function createRegion(
   // matches what the region actually covers.
   const fromTextLayer =
     data.textSource === 'TEXT_LAYER'
-      ? await readTextLayer(documentId, data.pageNumber, rect)
+      ? await readTextLayer(documentId, data.pageNumber, rect, options.snapTolerance ?? 0, {
+          ...(options.extractValue === true ? { extractFor: data.fieldType } : {}),
+        })
       : null;
 
   const row = await getPrisma().region.create({
@@ -157,6 +190,7 @@ export async function createRegion(
       height: round(data.height),
       fieldType: data.fieldType,
       fieldLabel: labelFor(data.fieldType, data.fieldLabel),
+      autoDetected: options.autoDetected ?? false,
       ...(fromTextLayer ?? {}),
     },
   });
@@ -174,6 +208,8 @@ async function readTextLayer(
   documentId: string,
   pageNumber: number,
   rect: NormalizedRect,
+  tolerance = 0,
+  options: { extractFor?: FieldType } = {},
 ): Promise<{
   textSource: 'TEXT_LAYER';
   ocrStatus: 'DONE';
@@ -187,13 +223,24 @@ async function readTextLayer(
   width: number;
   height: number;
 } | null> {
-  const snapped = await snapToText(documentId, pageNumber, rect);
+  const snapped = await snapToTextNear(documentId, pageNumber, rect, tolerance, {
+    // When the search has to widen, prefer a line that reads like the field
+    // being placed over one that merely sits nearby.
+    ...(options.extractFor === undefined
+      ? {}
+      : { prefer: (text: string) => looksLikeField(options.extractFor as FieldType, text) }),
+  });
   if (snapped.text === '' || snapped.rect === null) return null;
+
+  const text =
+    options.extractFor === undefined
+      ? snapped.text
+      : extractValue(options.extractFor, snapped.text);
 
   return {
     textSource: 'TEXT_LAYER',
     ocrStatus: 'DONE',
-    rawText: snapped.text,
+    rawText: text,
     confidence: 100,
     ocrError: null,
     ocrAt: new Date(),
