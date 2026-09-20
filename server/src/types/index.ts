@@ -43,6 +43,9 @@ export const ERROR_CODES = [
   // Week 6: templates
   'TEMPLATE_NOT_FOUND',
   'TEMPLATE_EMPTY',
+  // Week 7: export
+  'UNSUPPORTED_FORMAT',
+  'NOTHING_TO_EXPORT',
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -397,4 +400,110 @@ export interface TemplateSuggestion {
   score: number;
   /** The header line that matched, so the user can see why. */
   matchedText: string;
+}
+
+// ---------------------------------------------------------------------------
+// Week 7: export
+// ---------------------------------------------------------------------------
+
+export const EXPORT_FORMATS = ['json', 'csv', 'xlsx', 'xml'] as const;
+export type ExportFormat = (typeof EXPORT_FORMATS)[number];
+
+export const isExportFormat = (value: unknown): value is ExportFormat =>
+  typeof value === 'string' && (EXPORT_FORMATS as readonly string[]).includes(value);
+
+/**
+ * What is wrong, or merely worth a look, about one exported row.
+ *
+ * `error` means the row contradicts itself or cannot be read — the numbers do
+ * not add up, a date will not parse. `warning` means something is absent or
+ * uncertain. The distinction is what lets a bookkeeper export the batch and
+ * know which handful of rows to open first.
+ */
+export type IssueSeverity = 'error' | 'warning';
+
+export const ISSUE_CODES = [
+  'MISSING_FIELD',
+  'INVALID_DATE',
+  'INVALID_AMOUNT',
+  'TOTAL_MISMATCH',
+  'DUE_BEFORE_INVOICE',
+  'LOW_CONFIDENCE',
+  'UNREAD_REGION',
+  'NOT_PROCESSED',
+] as const;
+
+export type IssueCode = (typeof ISSUE_CODES)[number];
+
+export interface ValidationIssue {
+  code: IssueCode;
+  severity: IssueSeverity;
+  /** The column it concerns, when it concerns one. */
+  field?: string;
+  message: string;
+}
+
+/** The fixed columns every export has, in order. */
+export const EXPORT_FIELDS = [
+  'vendor_name',
+  'vendor_address',
+  'invoice_number',
+  'invoice_date',
+  'due_date',
+  'po_number',
+  'subtotal',
+  'tax',
+  'total',
+  'line_items',
+] as const;
+
+export type ExportField = (typeof EXPORT_FIELDS)[number];
+
+/** One document, flattened to one row. */
+export interface ExportRow {
+  documentId: string;
+  filename: string;
+  status: DocumentStatus;
+  pages: number;
+  uploadedAt: string;
+  batchName?: string;
+  /** The template that filled it in, if one did. */
+  templateName?: string;
+  /** The captured value of each field, as text. Absent when not captured. */
+  fields: Partial<Record<ExportField, string>>;
+  /** CUSTOM regions, keyed by their label. */
+  custom: Record<string, string>;
+  /** Amounts and dates parsed, where they parsed. */
+  parsed: {
+    subtotal?: number;
+    tax?: number;
+    total?: number;
+    invoiceDate?: string;
+    dueDate?: string;
+  };
+  issues: ValidationIssue[];
+  /** True when anything above is an error, or a warning worth stopping for. */
+  needsReview: boolean;
+}
+
+export interface ExportSummary {
+  documents: number;
+  /** Rows with at least one `error`. */
+  withErrors: number;
+  /** Rows with warnings but no errors. */
+  withWarnings: number;
+  /** Sum of every row's total that parsed, and the currency if they agree. */
+  totalValue?: number;
+  currency?: string;
+}
+
+export interface ExportPayload {
+  generatedAt: string;
+  /** The batch this covers, when it covers one. */
+  batchId?: string;
+  batchName?: string;
+  summary: ExportSummary;
+  /** Column keys in order: the fixed fields, then any custom labels found. */
+  columns: string[];
+  rows: ExportRow[];
 }

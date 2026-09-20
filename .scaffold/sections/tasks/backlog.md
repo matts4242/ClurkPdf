@@ -189,13 +189,63 @@ equidistant from the saved rectangle — the field above and the field below —
 were separated only by which came first in document order, so a PO number
 quietly picked up a date.
 
-## Week 7
+## Week 7 — Export
 
-Not started. One line of intent in `Project_Overview/Week 7.1`: export.
+- [x] `exportService` flattens documents and regions to one row each. The two
+      capture modes needed no merging: both already write to `Region`, so it
+      is one query and a pivot, exactly as predicted
+- [x] Four formats — CSV (fast-csv), XLSX, JSON, XML — all off the same rows,
+      so no two can disagree
+- [x] `GET /api/batches/:id/export?format=…` and `GET /api/exports?…` for an
+      arbitrary selection
+- [x] Field validation: amounts and dates parsed, with both separator
+      conventions and both date orders handled
+- [x] Cross-field validation: subtotal plus tax against the total, and a due
+      date against its invoice date
+- [x] `ExportPanel`: a preview with the checks shown, before anything
+      downloads
 
-Week 7's export is the first point where the two capture modes have to produce
-one flat row per document; because both already write to `Region`, that should
-be a single query rather than a merge. Week 6 helps twice over: `extractValue`
-already reduces a captured line to the value a column wants, and a document
-filled in from a template needs no per-document work before it can be
-exported.
+Also delivered:
+
+- [x] A minimal XLSX writer — ZIP framing and sheet XML — with no dependency.
+      Amounts are numbers, dates are dates, and an invoice number keeps its
+      leading zeros, which is the whole reason to offer it beside CSV
+- [x] CSV carries a byte-order mark, so a spreadsheet reads UTF-8 rather than
+      guessing at the system codepage
+- [x] XML carries a normalised `value` attribute beside what was printed, so
+      an ERP reads `1500.00` while an auditor still sees `1,500.00`
+- [x] Ambiguity is reported, not guessed: `03/04/2026` parses but marks itself
+      ambiguous, and the due-date ordering check declines to fire on one
+- [x] Custom fields become their own columns, named by the user's own labels
+- [x] 66 new server tests and 9 new client tests; 293 across the project
+
+Deviations from the spec, recorded in the README: the export hangs off
+`/api/batches/:id` rather than the spec's `/api/documents/batch/:batchId`,
+which reads as a document sub-resource but is a batch operation; and Excel is
+written directly rather than with a library, because the maintained SheetJS is
+not on npm and ExcelJS brings nine transitive packages — one of them flagged —
+to write a single flat sheet. QuickBooks and Xero are not built: they need
+OAuth credentials and a live external account, which is a different kind of
+work from this week.
+
+Three bugs found while testing this slice. The XLSX date epoch is two days
+before 1900-01-01, not one, because spreadsheets believe 1900 was a leap year.
+The JSON download button did nothing, because JSON is served inline for the
+preview and a link's `download` attribute is ignored across origins — the
+header is what actually downloads a file. And XML emitted `<issues>` twice,
+once as a flat column and again as the structured block.
+
+## The plan is complete
+
+All seven weeks of `Project_Overview/` are implemented. Natural next steps, in
+rough order of value:
+
+- **An audit trail.** The spec asks for a timestamped log of extractions and
+  corrections. Every write already goes through a service, so the hooks exist;
+  what is missing is the table and a decision about retention.
+- **QuickBooks and Xero.** The remaining export targets, and the only part of
+  the spec still untouched.
+- **Accounts.** `user_id` is absent from every table for the same reason each
+  week recorded: there is nothing to put in it yet. Multi-tenancy is the change
+  that would touch the most existing code, so it is worth doing deliberately
+  rather than incidentally.

@@ -322,3 +322,111 @@ export const regionLabel = (region: Region): string =>
   region.fieldType === 'CUSTOM' && region.fieldLabel
     ? region.fieldLabel
     : FIELD_TYPE_META[region.fieldType].label;
+
+// ---------------------------------------------------------------------------
+// Week 7: export
+// ---------------------------------------------------------------------------
+
+export const EXPORT_FORMATS = ['json', 'csv', 'xlsx', 'xml'] as const;
+export type ExportFormat = (typeof EXPORT_FORMATS)[number];
+
+/** The file formats offered as downloads, with how to label them. */
+export const DOWNLOAD_FORMATS = [
+  { format: 'csv', label: 'CSV', hint: 'Opens in any spreadsheet' },
+  { format: 'xlsx', label: 'Excel', hint: 'Amounts and dates keep their types' },
+  { format: 'json', label: 'JSON', hint: 'Everything, including the checks' },
+  { format: 'xml', label: 'XML', hint: 'For an ERP' },
+] as const satisfies readonly { format: ExportFormat; label: string; hint: string }[];
+
+export type IssueSeverity = 'error' | 'warning';
+
+export type IssueCode =
+  | 'MISSING_FIELD'
+  | 'INVALID_DATE'
+  | 'INVALID_AMOUNT'
+  | 'TOTAL_MISMATCH'
+  | 'DUE_BEFORE_INVOICE'
+  | 'LOW_CONFIDENCE'
+  | 'UNREAD_REGION'
+  | 'NOT_PROCESSED';
+
+export interface ValidationIssue {
+  code: IssueCode;
+  severity: IssueSeverity;
+  field?: string;
+  message: string;
+}
+
+export const EXPORT_FIELDS = [
+  'vendor_name',
+  'vendor_address',
+  'invoice_number',
+  'invoice_date',
+  'due_date',
+  'po_number',
+  'subtotal',
+  'tax',
+  'total',
+  'line_items',
+] as const;
+
+export type ExportField = (typeof EXPORT_FIELDS)[number];
+
+/** One document, flattened to one row. */
+export interface ExportRow {
+  documentId: string;
+  filename: string;
+  status: DocumentStatus;
+  pages: number;
+  uploadedAt: string;
+  batchName?: string;
+  templateName?: string;
+  fields: Partial<Record<ExportField, string>>;
+  custom: Record<string, string>;
+  parsed: {
+    subtotal?: number;
+    tax?: number;
+    total?: number;
+    invoiceDate?: string;
+    dueDate?: string;
+  };
+  issues: ValidationIssue[];
+  needsReview: boolean;
+}
+
+export interface ExportSummary {
+  documents: number;
+  withErrors: number;
+  withWarnings: number;
+  totalValue?: number;
+  currency?: string;
+}
+
+export interface ExportPayload {
+  generatedAt: string;
+  batchId?: string;
+  batchName?: string;
+  summary: ExportSummary;
+  /** Column keys in order: the fixed fields, then any custom labels found. */
+  columns: string[];
+  rows: ExportRow[];
+}
+
+/** The worst thing wrong with a row, for colouring it. */
+export const worstSeverity = (row: ExportRow): IssueSeverity | null => {
+  if (row.issues.some((issue) => issue.severity === 'error')) return 'error';
+  return row.issues.length > 0 ? 'warning' : null;
+};
+
+/** One row's value for one column, mirroring the server's `cellValue`. */
+export function exportCell(row: ExportRow, column: string): string {
+  if (column === 'filename') return row.filename;
+  if (column === 'needs_review') return row.needsReview ? 'yes' : 'no';
+  if (column === 'issues') {
+    return row.issues.map((issue) => issue.message).join('; ');
+  }
+  if ((EXPORT_FIELDS as readonly string[]).includes(column)) {
+    return row.fields[column as ExportField] ?? '';
+  }
+  return row.custom[column] ?? '';
+}

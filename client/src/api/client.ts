@@ -12,6 +12,8 @@ import type {
   Region,
   RunOcrResponse,
   ApplyTemplateResponse,
+  ExportFormat,
+  ExportPayload,
   Template,
   TemplateSuggestion,
   TextLayerData,
@@ -333,6 +335,74 @@ export function fetchTemplateSuggestions(
   return unwrap<{ suggestions: TemplateSuggestion[] }>(
     http.get(`/documents/${documentId}/template-suggestions`, signal ? { signal } : {}),
   ).then((payload) => payload.suggestions);
+}
+
+// ---------------------------------------------------------------------------
+// Export
+// ---------------------------------------------------------------------------
+
+export interface ExportScope {
+  /** Export one batch. */
+  batchId?: string;
+  /** Or only these documents. Ignored when `batchId` is given. */
+  documentIds?: string[];
+  /** Include documents the queue has not finished with. */
+  includeUnprocessed?: boolean;
+}
+
+/**
+ * URL of an export.
+ *
+ * Built rather than fetched for the file formats: a download is a navigation,
+ * not an XHR — letting the browser fetch it means the file never passes
+ * through JavaScript and the Save dialog behaves the way the user expects.
+ */
+export function exportUrl(
+  scope: ExportScope,
+  format: ExportFormat,
+  options: { download?: boolean } = {},
+): string {
+  const base =
+    scope.batchId === undefined
+      ? `${SERVER_ORIGIN}/api/exports`
+      : `${SERVER_ORIGIN}/api/batches/${scope.batchId}/export`;
+
+  const url = new URL(base);
+  url.searchParams.set('format', format);
+  if (scope.batchId === undefined && scope.documentIds !== undefined) {
+    url.searchParams.set('documentIds', scope.documentIds.join(','));
+  }
+  if (scope.includeUnprocessed === true) {
+    url.searchParams.set('includeUnprocessed', 'true');
+  }
+  // JSON is served inline unless asked for as a file, because the preview
+  // fetches it. The other formats are attachments either way.
+  if (options.download === true) {
+    url.searchParams.set('download', '1');
+  }
+  return url.toString();
+}
+
+/**
+ * The export as data, for the preview.
+ *
+ * JSON is the only format that comes back through here; the rest are
+ * downloads and never touch this code.
+ */
+export async function fetchExport(
+  scope: ExportScope,
+  signal?: GenericAbortSignal,
+): Promise<ExportPayload> {
+  try {
+    const { data } = await http.get<ExportPayload>(exportUrl(scope, 'json'), {
+      // The URL is already absolute, so it must not be prefixed again.
+      baseURL: '',
+      ...(signal ? { signal } : {}),
+    });
+    return data;
+  } catch (error) {
+    throw new ApiRequestError(toApiError(error));
+  }
 }
 
 export type { FieldType };

@@ -4,13 +4,13 @@ A browser-based tool for digitising paper and PDF invoices. Accounting teams
 upload a batch, mark up the fields they care about, and export structured data.
 
 The build follows the seven-week plan in [`Project_Overview/`](./Project_Overview),
-one vertical slice at a time. **Weeks 1 to 6 are implemented: drop a batch of
-PDFs, watch a real queue work through them while the fields each invoice
+one vertical slice at a time, and **all seven are implemented**: drop a batch
+of PDFs, watch a real queue work through them while the fields each invoice
 declares are filled in automatically, then correct what it found — or mark up
 anything it missed by drawing regions and running OCR, or by highlighting the
 document's own text. Mark one invoice up by hand and save it as a template, and
-the next invoice from that vendor arrives already filled in.** Week 7 adds
-export.
+the next invoice from that vendor arrives already filled in. When the batch is
+done, check what the numbers say and export it as CSV, Excel, JSON or XML.
 
 ## Requirements
 
@@ -166,6 +166,8 @@ Every endpoint answers with the same envelope, success or failure.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
+| `GET` | `/api/batches/:id/export` | Export a batch — `?format=csv\|xlsx\|json\|xml` |
+| `GET` | `/api/exports` | Export everything, or `?documentIds=a,b,c` |
 | `POST` | `/api/templates` | Save a document's regions as a template |
 | `GET` | `/api/templates` | List saved templates, newest first |
 | `GET` | `/api/templates/:id` | One template and its saved rectangles |
@@ -204,7 +206,8 @@ Error codes: `FILE_TOO_LARGE` (413), `INVALID_FILE_TYPE` (415),
 `PROCESSING_ERROR` (500), `INTERNAL_ERROR` (500), `REGION_NOT_FOUND` (404),
 `REGION_OUT_OF_BOUNDS` (400), `INVALID_DIMENSIONS` (400), `INVALID_PAGE` (400),
 `INVALID_FIELD_TYPE` (400), `BATCH_NOT_FOUND` (404), `QUEUE_UNAVAILABLE` (503),
-`TEMPLATE_NOT_FOUND` (404), `TEMPLATE_EMPTY` (400).
+`TEMPLATE_NOT_FOUND` (404), `TEMPLATE_EMPTY` (400),
+`UNSUPPORTED_FORMAT` (400).
 
 ### OCR
 
@@ -374,6 +377,69 @@ number, and offering three candidates would be worse than offering the best one
 and letting the user redraw it. A scanned page has no text layer and gets
 nothing from here; OCR remains the path for those.
 
+### Export
+
+Every captured document flattens to one row. This is the point the whole shape
+of the project was aiming at: a region drawn and read by OCR and a span
+highlighted off the PDF's own text are both `Region` rows with a `fieldType`,
+so producing a flat row is one query and a pivot rather than a merge of two
+different shapes.
+
+```
+GET /api/batches/:id/export?format=csv|xlsx|json|xml
+GET /api/exports?format=csv&documentIds=a,b,c
+```
+
+Columns are the fixed invoice fields, then one per custom label found in the
+set being exported — those are named by the user, so no fixed schema could
+hold them — then `needs_review` and `issues`. All four formats come off the
+same rows, so a CSV and an XLSX of one batch can never disagree.
+
+| Format | What it is for |
+| --- | --- |
+| CSV | Anything. Carries a byte-order mark so a spreadsheet reads it as UTF-8 |
+| XLSX | Amounts as numbers, dates as dates, identifiers still text |
+| JSON | Everything, including the parsed values and the checks |
+| XML | An ERP. Each value carries a normalised `value` attribute |
+
+**Why XLSX as well as CSV**, when CSV opens in Excel: because CSV has no
+types. A spreadsheet reading `INV-0042` guesses at it, `0042` loses its
+leading zeros, and `03/04/2026` is silently reinterpreted by locale — which
+are exactly the values on an invoice.
+
+### Checking before exporting
+
+Fifty invoices export as fifty rows whether or not the numbers make sense. The
+value is knowing which three to open, so every row is checked and the preview
+shows the result before anything downloads.
+
+An **error** means the row contradicts itself or cannot be read; a **warning**
+means something is absent or uncertain.
+
+| Code | | What it means |
+| --- | --- | --- |
+| `TOTAL_MISMATCH` | error | Subtotal plus tax is not the total |
+| `INVALID_AMOUNT` | error | An amount field will not parse |
+| `INVALID_DATE` | error | A date field will not parse |
+| `DUE_BEFORE_INVOICE` | error | The due date precedes the invoice date |
+| `NOT_PROCESSED` | error | The queue has not finished with the document |
+| `MISSING_FIELD` | warning | A vendor, invoice number or total was never captured |
+| `LOW_CONFIDENCE` | warning | A field was read below 70%, and which one |
+| `UNREAD_REGION` | warning | A region has no text yet |
+
+The arithmetic check is the one worth having: a subtotal and tax that do not
+add up to the total means one of the three was read off the wrong line, and no
+amount of per-field plausibility would catch it. It compares whole pence, so
+floating point cannot produce a false alarm.
+
+**Ambiguity is reported rather than guessed.** `1.500` is fifteen hundred or
+one and a half depending on the country, and `03/04/2026` is two different
+days. Amounts are resolved by rule — where both separators appear the later is
+the decimal point, and a lone separator is a decimal only with exactly two
+digits after it. Dates cannot be resolved that way, so a wholly numeric one
+parses day-first but marks itself ambiguous, and the due-date ordering check
+declines to fire on one rather than reporting an error it cannot stand behind.
+
 ### Templates
 
 Detection guesses at invoices in general. A template is the better guess you
@@ -442,17 +508,19 @@ is a mistake — so the file is queued and processed like any other.
 ## Testing
 
 ```bash
-npm test               # 218 tests
+npm test               # 293 tests
 ```
 
-- **Server (185)** — HTTP endpoints, PDF rendering, region validation and
+- **Server (251)** — HTTP endpoints, PDF rendering, region validation and
   ownership, OCR, text-layer extraction and snapping, batches, the processing
-  queue, field detection, templates and vendor matching, duplicate detection,
-  WebSocket progress, restart recovery, cascade deletes, and path-traversal
-  defences. Each test runs against a real server on an ephemeral port, a real
-  database, and a real Redis.
-- **Client (33)** — the coordinate maths, including that a region covers the
-  same content at every zoom level, and the processing-event fold.
+  queue, field detection, templates and vendor matching, amount and date
+  parsing, export in four formats, duplicate detection, WebSocket progress,
+  restart recovery, cascade deletes, and path-traversal defences. Each test
+  runs against a real server on an ephemeral port, a real database, and a real
+  Redis.
+- **Client (42)** — the coordinate maths, including that a region covers the
+  same content at every zoom level; the processing-event fold; and the export
+  preview's cell lookup, which has to agree with the server's.
 
 The OCR tests run Tesseract for real against a generated invoice whose text the
 fixture chooses, so recognition is measured rather than stubbed. The first run
@@ -468,6 +536,12 @@ The template tests are the same shape and caught the same class of thing: a
 rectangle saved from one invoice and replayed onto a second, where the fields
 sit a line lower, reads nothing at all unless the snap is allowed to search
 beyond the rectangle it was given.
+
+The export tests hold the hand-written .xlsx to the same standard. Writing a
+ZIP container by hand is only defensible if something other than the writer
+says it is valid, so they shell out to `unzip`: `-t` verifies every CRC and
+`-p` gives the XML back to assert on. A workbook Excel would refuse fails
+there first.
 
 The server suite starts from an empty schema: migrations are applied once, then
 every test truncates. Two guards keep that away from real data. `DATABASE_URL`
@@ -486,6 +560,32 @@ Test PDFs are generated byte-by-byte in `server/src/test/fixtures.ts`, so no
 binary fixtures are stored in the repository.
 
 ## Notes on the specification
+
+### Week 7
+
+- **The export hangs off the batch, not the document.** The spec writes
+  `/api/documents/batch/:batchId/export`, which reads as a document
+  sub-resource but is a batch operation; `/api/batches/:id` already exists.
+- **Excel is written directly rather than with a library.** SheetJS's
+  maintained builds are not published to npm — the version there is years
+  stale with open advisories — and ExcelJS brings nine transitive packages,
+  one of them flagged, to write a single flat sheet. What is needed is small
+  and fully specified: an .xlsx is a ZIP of a few XML parts. The tests read
+  the result back with a real ZIP reader rather than trusting the writer.
+- **`fast-csv` is used as the spec names.** CSV quoting is a place where
+  hand-rolling causes bugs, and it is a small package with no advisories.
+- **QuickBooks and Xero are not built.** They need OAuth credentials and a
+  live external account to develop against, which is a different kind of work
+  from the rest of this week; the four file formats are the part that can be
+  finished and tested here.
+- **No audit trail yet.** The spec asks for a timestamped log of extractions
+  and corrections. It wants its own table and a retention decision, so it is
+  noted in the backlog rather than bolted on.
+- **The validation is the spec's, plus the confidence the earlier weeks
+  already record.** Regex checks for dates and amounts and the line-sum
+  arithmetic are what was asked for; `LOW_CONFIDENCE` and `UNREAD_REGION` come
+  free from what Weeks 3 to 6 already store, and name the field so the warning
+  is worth acting on.
 
 ### Week 6
 

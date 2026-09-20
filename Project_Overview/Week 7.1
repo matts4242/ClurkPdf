@@ -1,1 +1,11 @@
 Week 7: Export → Output (needs all previous)
+
+Implemented. See the Week 7 entry in `.scaffold/sections/tasks/backlog.md` for
+what was delivered, and the "Week 7" section of the README's notes on the
+specification for where it departs from the plan above.
+
+Summary: every captured document flattens to one row — the two capture modes
+already agree, so it is a single query rather than a merge — and downloads as
+CSV, Excel, JSON or XML. Each row is checked first: amounts and dates are
+parsed, subtotal plus tax is compared against the total, and what is wrong is
+shown in a preview before anything leaves.
