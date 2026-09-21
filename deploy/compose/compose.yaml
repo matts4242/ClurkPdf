@@ -1,0 +1,138 @@
+# The whole application, as five containers.
+#
+#   cd deploy/compose
+#   cp .env.example .env        # then set POSTGRES_PASSWORD
+#   docker compose up -d --build
+#
+# This is not the `docker-compose.yml` at the repository root. That one starts
+# PostgreSQL and Redis and nothing else, for running the app from source while
+# developing. This one builds the app and runs it: migrations, API, queue,
+# database, and nginx serving the compiled client in front of them.
+#
+# Only `web` publishes a port. The API, the database and Redis are reachable
+# on the private network by service name and nowhere else, which is why nginx
+# proxies /api, /ws and /uploads rather than the browser talking to :3001.
+
+name: clurkpdf
+
+services:
+  # ---------------------------------------------------------------------
+  # Data
+  # ---------------------------------------------------------------------
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-invoice}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env - see .env.example}
+      POSTGRES_DB: ${POSTGRES_DB:-invoice_processor}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # Doubled `$$` so Compose leaves these for the shell inside the
+      # container, where they are the variables set just above.
+      test: ['CMD-SHELL', 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # A queue is a work list, not a store of record: every job's real state is
+    # a row in PostgreSQL, so persistence here would only slow writes down.
+    command: ['redis-server', '--save', '', '--appendonly', 'no']
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------
+  # Schema
+  # ---------------------------------------------------------------------
+
+  # Runs to completion before the API starts, on every `up`. Applying
+  # migrations from the API's own entrypoint would race: three replicas would
+  # each try to migrate the same database at once. A separate one-shot service
+  # cannot.
+  migrate:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: api
+    image: clurkpdf-api
+    restart: 'no'
+    command: ['npx', '--no', '--', 'prisma', 'migrate', 'deploy']
+    environment:
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-invoice}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-invoice_processor}?schema=public"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------
+  # Application
+  # ---------------------------------------------------------------------
+
+  api:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: api
+    image: clurkpdf-api
+    restart: unless-stopped
+    # Every knob from .env, so a new setting needs no change here. The four
+    # below are fixed by the topology rather than chosen, so they are set
+    # explicitly and win over anything of the same name in .env.
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-invoice}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-invoice_processor}?schema=public"
+      REDIS_URL: redis://redis:6379
+      # Volumes, not image layers: both must outlive a rebuild.
+      UPLOADS_DIR: /data/uploads
+      OCR_CACHE_DIR: /data/tesseract
+    volumes:
+      - uploads:/data/uploads
+      - tesseract-cache:/data/tesseract
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  web:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: web
+      args:
+        # The client is compiled, so these are build-time values. An empty
+        # origin sends every request back to whatever served the page, which
+        # is exactly what one proxy in front of everything wants.
+        VITE_SERVER_ORIGIN: ${VITE_SERVER_ORIGIN-}
+        # Must match the API's PAGE_DPI or drawn regions land at the wrong
+        # scale, so it is taken from the same variable.
+        VITE_PAGE_DPI: ${PAGE_DPI:-150}
+    restart: unless-stopped
+    environment:
+      # Substituted into nginx.conf.template at startup.
+      API_PORT: ${PORT:-3001}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-12}
+    ports:
+      - '${WEB_PORT:-8080}:80'
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  # Uploaded PDFs and every page image rendered from them. The largest of the
+  # three by far, and the one worth backing up alongside the database.
+  uploads:
+  # Tesseract's language data, ~5MB fetched once. A volume only so that a
+  # restart does not download it again.
+  tesseract-cache:

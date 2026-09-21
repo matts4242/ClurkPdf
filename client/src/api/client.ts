@@ -24,6 +24,16 @@ import type {
 export const SERVER_ORIGIN: string =
   import.meta.env.VITE_SERVER_ORIGIN ?? 'http://localhost:3001';
 
+/**
+ * A base for `new URL`.
+ *
+ * SERVER_ORIGIN is empty wherever one proxy serves the bundle and the API
+ * together, so that every request goes back to whatever served the page. That
+ * works everywhere a string is concatenated and nowhere `new URL` is used,
+ * which refuses an empty base — so the page's own origin stands in for it.
+ */
+const urlBase = (): string => (SERVER_ORIGIN === '' ? window.location.origin : SERVER_ORIGIN);
+
 const http: AxiosInstance = axios.create({
   baseURL: `${SERVER_ORIGIN}/api`,
   timeout: 30_000,
@@ -267,7 +277,7 @@ export function deleteBatch(id: string): Promise<{ documentsDeleted: number }> {
  * which is what the document list wants.
  */
 export function progressSocketUrl(batchId?: string): string {
-  const url = new URL('/ws', SERVER_ORIGIN);
+  const url = new URL('/ws', urlBase());
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   if (batchId !== undefined) url.searchParams.set('batchId', batchId);
   return url.toString();
@@ -367,7 +377,7 @@ export function exportUrl(
       ? `${SERVER_ORIGIN}/api/exports`
       : `${SERVER_ORIGIN}/api/batches/${scope.batchId}/export`;
 
-  const url = new URL(base);
+  const url = new URL(base, urlBase());
   url.searchParams.set('format', format);
   if (scope.batchId === undefined && scope.documentIds !== undefined) {
     url.searchParams.set('documentIds', scope.documentIds.join(','));

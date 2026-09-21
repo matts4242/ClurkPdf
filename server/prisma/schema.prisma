@@ -3,9 +3,14 @@
 // Week 2 introduces PostgreSQL. Documents move here from the JSON sidecars
 // Week 1 wrote beside each upload; regions are new.
 
+// Generated beside `src` rather than inside it, so that one relative path
+// reaches it from both `src/db/` when tsx runs the sources and `dist/db/`
+// when node runs the build. Generating into `src` put it out of reach of the
+// compiled server entirely: tsc emits only the .ts files it is given, so
+// `dist/generated/` was never written and `npm start` could not resolve it.
 generator client {
   provider = "prisma-client-js"
-  output   = "../src/generated/prisma"
+  output   = "../generated/prisma"
 }
 
 // Prisma 7 no longer takes the connection URL here. Migration commands read it

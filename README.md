@@ -65,6 +65,8 @@ server/     Express + TypeScript API
   src/events/  Progress event bus and the WebSocket endpoint
   uploads/  Uploaded PDFs and rendered page images (gitignored)
 deploy/     One-command VPS installer and its companions
+  compose/  Docker Compose deployment: images, .env and nginx
+Dockerfile  Multi-stage build for the api and web images
 scripts/    Database bootstrap for docker-compose
 Project_Overview/  The week-by-week build specification
 ```
@@ -127,6 +129,26 @@ string makes every request relative, which is what a deployment behind one
 reverse proxy wants.
 
 ## Deployment
+
+Two ways, depending on whether the machine runs Docker.
+
+### Docker Compose
+
+```bash
+cd deploy/compose
+cp .env.example .env     # then set POSTGRES_PASSWORD
+docker compose up -d --build
+```
+
+Five containers — PostgreSQL, Redis, a one-shot migration, the API, and nginx
+serving the compiled client — with only nginx's port published. Every setting
+is in that `.env`; [`deploy/compose/README.md`](./deploy/compose/README.md)
+covers upgrades, backups and putting it behind a domain.
+
+This is separate from the `docker-compose.yml` at the root, which starts a
+database and a queue for development and nothing else.
+
+### On the machine itself
 
 One command on a fresh Ubuntu, Debian, Rocky, Alma or Fedora server:
 

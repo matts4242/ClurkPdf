@@ -550,6 +550,35 @@ describe('WebSocket progress', () => {
       }),
     ).rejects.toThrow();
   });
+
+  it('refuses an upgrade from a page on another site', async () => {
+    const { WebSocket } = await import('ws');
+    const socket = new WebSocket(wsUrl, { origin: 'http://elsewhere.example' });
+
+    await expect(
+      new Promise<void>((resolve, reject) => {
+        socket.once('open', () => resolve());
+        socket.once('error', reject);
+      }),
+    ).rejects.toThrow();
+  });
+
+  it('accepts an upgrade from the page it is serving, whatever its address', async () => {
+    // Nothing here is in CLIENT_ORIGIN: this is the address the request
+    // arrived on, which behind a reverse proxy is the only thing the API
+    // knows about the public URL.
+    const { WebSocket } = await import('ws');
+    const socket = new WebSocket(wsUrl, {
+      origin: `http://${wsUrl.replace('ws://', '').replace('/ws', '')}`,
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', () => resolve());
+      socket.once('error', reject);
+    });
+
+    socket.close();
+  });
 });
 
 // ---------------------------------------------------------------------------

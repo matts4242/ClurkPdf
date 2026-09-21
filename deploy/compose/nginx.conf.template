@@ -1,0 +1,89 @@
+# nginx in front of the API, for the Compose deployment.
+#
+# The same shape the VPS installer writes, so there is one production topology
+# rather than two: the compiled bundle as static files, everything else
+# proxied to the api container by its service name.
+#
+# A template, not a finished config: the nginx image's entrypoint runs envsubst
+# over everything in /etc/nginx/templates and writes the result to
+# /etc/nginx/conf.d, which is how ${MAX_UPLOAD_MB} and ${API_PORT} below become
+# real values. Only names that exist in the environment are substituted, so
+# nginx's own $uri, $host and $scheme come through untouched.
+
+server {
+    listen 80;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Must be at least as large as the server's MAX_FILE_SIZE, or nginx
+    # rejects the upload before the API ever sees it and can say why.
+    client_max_body_size ${MAX_UPLOAD_MB}m;
+
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-Frame-Options SAMEORIGIN always;
+    add_header Referrer-Policy strict-origin-when-cross-origin always;
+
+    gzip on;
+    gzip_vary on;
+    gzip_min_length 1024;
+    gzip_types text/css application/javascript application/json image/svg+xml;
+
+    # A single-page app: an unknown path is a route, not a missing file.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Vite fingerprints these filenames, so they can be cached indefinitely.
+    location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        # Repeated, not inherited: an `add_header` anywhere in a block drops
+        # every one declared above it, and this is the block that serves the
+        # JavaScript — the one place nosniff actually matters.
+        add_header X-Content-Type-Options nosniff always;
+        add_header X-Frame-Options SAMEORIGIN always;
+        add_header Referrer-Policy strict-origin-when-cross-origin always;
+    }
+
+    location /api/ {
+        proxy_pass http://api:${API_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # A page of regions takes a while to recognise, and the browser client
+        # waits three minutes for /ocr. nginx must not give up first.
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+
+    # Live processing progress. An Upgrade header is hop-by-hop, so without
+    # these two lines nginx strips it, the handshake comes back as a plain 200,
+    # and the client falls into a reconnect loop that never succeeds.
+    location /ws {
+        proxy_pass http://api:${API_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # An idle socket between batches must outlive nginx's default minute.
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    # Rendered page images. Proxied rather than served straight from a shared
+    # volume on purpose: the API refuses everything in the uploads tree except
+    # page renders and thumbnails, and serving the directory would hand out the
+    # original PDFs alongside them.
+    location /uploads/ {
+        proxy_pass http://api:${API_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}

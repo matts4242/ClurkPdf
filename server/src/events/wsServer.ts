@@ -29,6 +29,27 @@ interface Client {
 
 const clients = new Set<Client>();
 
+/**
+ * Whether a page at `origin` may watch this server's progress.
+ *
+ * A configured origin qualifies, and so does the page the request was sent
+ * to: behind a reverse proxy the API is never told the public URL, so a
+ * deployment reached by its IP, or by a second domain, would otherwise have
+ * its own page refused. That is still the same-origin rule and not a hole in
+ * it — a browser sends the host it actually connected to, so a page on
+ * another site arrives with its own `Origin` against this `Host` and is
+ * turned away exactly as before.
+ */
+function mayWatch(origin: string, host: string | undefined): boolean {
+  if (config.allowedOrigins.includes(origin)) return true;
+  if (host === undefined) return false;
+  try {
+    return new URL(origin).host === host;
+  } catch {
+    return false;
+  }
+}
+
 let wss: WebSocketServer | null = null;
 let unsubscribe: (() => void) | null = null;
 let heartbeat: ReturnType<typeof setInterval> | null = null;
@@ -56,7 +77,7 @@ export function attachWebSocketServer(server: Server): WebSocketServer {
     // Same origin rule as the REST API: a page the user did not open must not
     // be able to watch their uploads.
     const origin = request.headers.origin;
-    if (origin !== undefined && !config.allowedOrigins.includes(origin)) {
+    if (origin !== undefined && !mayWatch(origin, request.headers.host)) {
       socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
       socket.destroy();
       return;

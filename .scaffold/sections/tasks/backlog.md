@@ -249,3 +249,57 @@ rough order of value:
   week recorded: there is nothing to put in it yet. Multi-tenancy is the change
   that would touch the most existing code, so it is worth doing deliberately
   rather than incidentally.
+
+## Docker Compose deployment
+
+Asked for after the seven weeks: a compose file and an `.env` so the whole
+application can be brought up with Docker, not just the database and queue the
+root `docker-compose.yml` has always started for development.
+
+- [x] `Dockerfile` — five stages, one dependency install and one build shared
+      between the `api` and `web` images
+- [x] `deploy/compose/compose.yaml` — postgres, redis, a one-shot `migrate`,
+      the api, and nginx; ordered by health checks rather than by sleep, with
+      only nginx's port published
+- [x] `deploy/compose/.env.example` — every setting the server reads, with the
+      defaults written out, and one password that must be changed
+- [x] `deploy/compose/nginx.conf.template` — the installer's proxy shape, as an
+      envsubst template so the upload limit and API port come from `.env`
+- [x] `deploy/compose/README.md` — requirements, upgrades, backups, TLS, and
+      what the four failures people actually hit look like
+
+Migrations run in their own container rather than from the API's entrypoint:
+two API replicas would otherwise migrate the same database at once.
+
+One pre-existing bug fell out of this. `npm start` had never worked from a
+build: the Prisma client generated into `src/generated` and `tsc` emits only
+the `.ts` files it is given, so `dist/generated/` was never written and the
+compiled server could not resolve its own database client. Generating it into
+`server/generated` instead puts it one relative path from both `src/db/` and
+`dist/db/`. Nothing but the deployment depended on `npm start`, which is why
+seven weeks of `npm run dev` never showed it.
+
+Not verified end to end: there is no Docker daemon in the environment this was
+written in, so the images have never been built and the stack has never been
+started. What was checked is `docker compose config` (interpolation, service
+graph, volume names, and that a missing `POSTGRES_PASSWORD` stops the stack),
+the envsubst substitution over the nginx template, the build with the same
+environment the build stage sets, and the compiled server running from `dist`
+against a real PostgreSQL and Redis with the absolute upload and cache paths
+the containers use.
+
+Two more bugs, both found by building the client the way the deployment does
+— with an empty `VITE_SERVER_ORIGIN`, so every request is relative — and then
+loading it through a proxy standing in for the nginx container. `new URL`
+refuses an empty base, so the WebSocket URL and every export link threw the
+moment the page was served from anywhere but the Vite dev server; the page's
+own origin now stands in. And the WebSocket's origin check compared against
+`CLIENT_ORIGIN` alone, so a deployment reached by its IP or by a second domain
+had its own page refused with a 403 and live progress never connected. A
+request whose `Origin` matches the `Host` it arrived on is the same page, and
+is now allowed — a browser cannot be made to send a `Host` that disagrees with
+the address it connected to, so this is the same-origin rule rather than a
+hole in it.
+
+Both of those also affected the VPS installer, which has always written an
+empty `VITE_SERVER_ORIGIN` for the same reason.

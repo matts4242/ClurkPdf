@@ -1,0 +1,35 @@
+# Everything the build does not need. Keeping the context small matters here:
+# `node_modules` and `uploads` are by far the largest directories in the tree,
+# and shipping either into the build would also risk a host-built native module
+# overwriting the one the image installs for itself.
+
+.git
+.github
+node_modules
+**/node_modules
+
+# Build output — the image builds its own.
+server/dist
+server/generated
+client/dist
+
+# Runtime data. `uploads` can be gigabytes.
+server/uploads
+server/.tesseract-cache
+
+# Local configuration, which must never be baked into an image.
+.env
+**/.env
+**/.env.local
+**/.env.*.local
+!**/.env.example
+
+# Not part of the application. The nginx config is the one exception: the web
+# stage copies it.
+deploy
+!deploy/compose/nginx.conf.template
+Project_Overview
+.scaffold
+.agents
+.vscode
+*.md

@@ -10,6 +10,10 @@ The installer asks a handful of questions, shows you what it is about to do,
 and then does it. Ten minutes later the app is running behind nginx on port 80
 — with a Let's Encrypt certificate if you gave it a domain.
 
+If the machine already runs Docker, [`compose/`](./compose/README.md) is the
+other way to do this: the same topology as containers, one `.env`, no changes
+to the host.
+
 ```
    ██████╗██╗     ██╗   ██╗██████╗ ██╗  ██╗██████╗ ██████╗ ███████╗
   ██╔════╝██║     ██║   ██║██╔══██╗██║ ██╔╝██╔══██╗██╔══██╗██╔════╝
