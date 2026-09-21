@@ -88,6 +88,41 @@ describe('pdfService', () => {
     expect(png.length).toBeGreaterThan(100);
   });
 
+  it('finds the standard fonts pdfjs-dist ships', async () => {
+    // The render falls back to the machine's own fonts if this path is wrong,
+    // so on a developer's laptop nothing looks amiss and a container — which
+    // has no fonts at all — draws blank pages. Check the path itself, where a
+    // pdfjs-dist upgrade that moves the directory shows up immediately.
+    const { readdir } = await import('node:fs/promises');
+    const { STANDARD_FONT_DATA_URL } = await import('../services/pdfFonts.js');
+
+    const files = await readdir(STANDARD_FONT_DATA_URL);
+    // The Helvetica stand-in and the Times one: between them they cover the
+    // fonts an invoice is likeliest to name without embedding.
+    expect(files).toContain('LiberationSans-Regular.ttf');
+    expect(files).toContain('FoxitSerif.pfb');
+  });
+
+  it('draws the text of a page that embeds no fonts', async () => {
+    // The fixture asks for Helvetica without embedding it, the way a great
+    // many invoices do. Left to the machine's own fonts that renders blank
+    // wherever none are installed — a container, a minimal server — and says
+    // nothing about it, so the check is for ink rather than for bytes.
+    const { createCanvas, loadImage } = await import('@napi-rs/canvas');
+    const png = await renderPageToPng(buildPdf(['Invoice 12345']), 1, { dpi: 72 });
+
+    const image = await loadImage(png);
+    const canvas = createCanvas(image.width, image.height);
+    const context = canvas.getContext('2d');
+    context.drawImage(image, 0, 0);
+
+    const pixels = context.getImageData(0, 0, image.width, image.height).data;
+    let dark = 0;
+    for (let i = 0; i < pixels.length; i += 4) if (pixels[i] < 200) dark++;
+
+    expect(dark).toBeGreaterThan(100);
+  });
+
   it('honours an explicit target width', async () => {
     // A 612pt-wide page rendered at 150px should be 150px wide. Bytes 16-20 of
     // a PNG hold the IHDR width.

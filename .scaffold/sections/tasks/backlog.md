@@ -279,14 +279,17 @@ compiled server could not resolve its own database client. Generating it into
 `dist/db/`. Nothing but the deployment depended on `npm start`, which is why
 seven weeks of `npm run dev` never showed it.
 
-Not verified end to end: there is no Docker daemon in the environment this was
-written in, so the images have never been built and the stack has never been
-started. What was checked is `docker compose config` (interpolation, service
-graph, volume names, and that a missing `POSTGRES_PASSWORD` stops the stack),
-the envsubst substitution over the nginx template, the build with the same
-environment the build stage sets, and the compiled server running from `dist`
-against a real PostgreSQL and Redis with the absolute upload and cache paths
-the containers use.
+The stack was then built and run: `docker compose up -d` brings all five
+containers up, migrations apply, all four services report healthy, and an
+upload driven through a browser on the published port runs the whole path —
+queue, live progress over the WebSocket, thumbnail, page render, and all four
+export formats downloaded and read back. An 11MB upload gets the API's own
+`FILE_TOO_LARGE` answer while a 13MB one is cut off by nginx, which is the
+headroom between `MAX_FILE_SIZE` and `MAX_UPLOAD_MB` working as intended.
+
+Only OCR is unexercised in a container: Tesseract fetches its language data on
+first use, and the sandbox this was verified in gives containers no outbound
+network. The README says so under troubleshooting.
 
 Two more bugs, both found by building the client the way the deployment does
 — with an empty `VITE_SERVER_ORIGIN`, so every request is relative — and then
@@ -303,3 +306,15 @@ hole in it.
 
 Both of those also affected the VPS installer, which has always written an
 empty `VITE_SERVER_ORIGIN` for the same reason.
+
+Running it turned up two more, both invisible outside a container:
+
+- **Live progress was refused with a 403.** nginx forwarded `Host $host`,
+  which drops the port, so the API compared `localhost` against an `Origin` of
+  `localhost:8080` and turned the page away from its own progress. The proxy
+  now forwards `$http_host`, exactly what the browser sent.
+- **Every page rendered blank.** A PDF need not embed Helvetica, Times or
+  Courier, and pdf.js was told to satisfy those from the machine's own fonts —
+  of which a slim base image has none, so every glyph drew nothing and no
+  error was raised. pdfjs-dist ships its own copies; the render and the text
+  layer now use those, which also makes a bare VPS behave like a laptop.

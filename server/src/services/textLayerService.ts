@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import * as store from './documentStore.js';
+import { STANDARD_FONT_DATA_URL } from './pdfFonts.js';
 import type { NormalizedRect, TextItem, TextLayer } from '../types/index.js';
 import { invalidPdf, pageNotFound } from '../utils/errors.js';
 
@@ -40,7 +41,10 @@ export async function getTextLayer(
 
   const loadingTask = pdfjs.getDocument({
     data,
-    useSystemFonts: true,
+    // pdfjs-dist's own copies of the standard fonts, so that reading a page
+    // does not depend on what the machine has installed; see pdfFonts.ts.
+    useSystemFonts: false,
+    standardFontDataUrl: STANDARD_FONT_DATA_URL,
     disableFontFace: true,
     isOffscreenCanvasSupported: false,
   });

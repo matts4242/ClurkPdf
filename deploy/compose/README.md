@@ -134,5 +134,17 @@ start again — that deletes the uploads too.
 **Uploads fail at around 10MB.** `MAX_FILE_SIZE` and `MAX_UPLOAD_MB` both need
 raising; see above.
 
+**Progress bars never move, and the console shows a 403 on `/ws`.** The API
+allows a socket from a configured origin, or from the address the request
+arrived on. The `web` container forwards that address intact; another proxy in
+front of it may not, in which case add the URL people actually type to
+`CLIENT_ORIGIN` — scheme, host and port, exactly as the browser sends it.
+
+**The first OCR run fails with a fetch error.** Tesseract downloads its
+language data (~5MB) the first time it recognises anything, so the `api`
+container needs outbound HTTPS on that first run. It is cached in the
+`tesseract-cache` volume afterwards; somewhere without egress, populate that
+volume from a machine that has it.
+
 **The build is killed.** The Vite build needs roughly 2GB. Give Docker Desktop
 more memory, or add swap on a small VPS.

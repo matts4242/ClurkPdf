@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import { createCanvas } from '@napi-rs/canvas';
 import type { PDFDocumentProxy } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { config } from '../config.js';
+import { STANDARD_FONT_DATA_URL } from './pdfFonts.js';
 import { invalidPdf, processingError } from '../utils/errors.js';
 import { resolveWithin } from '../utils/validation.js';
 
@@ -40,8 +41,11 @@ async function withDocument<T>(
     loadingTask = pdfjs.getDocument({
       data,
       // Untrusted input: keep font handling local and skip anything that would
-      // reach outside the process.
-      useSystemFonts: true,
+      // reach outside the process. The standard fonts come from pdfjs-dist
+      // rather than the machine, so a host with no fonts installed still
+      // renders text; see pdfFonts.ts.
+      useSystemFonts: false,
+      standardFontDataUrl: STANDARD_FONT_DATA_URL,
       disableFontFace: true,
       isOffscreenCanvasSupported: false,
     });
